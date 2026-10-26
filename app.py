@@ -17,12 +17,13 @@ import sys
 import threading
 import time
 import webbrowser
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from remains import RemainsError, parse_remains
-from core import (NO_TYPE, KeyStore, WaysheetCache, WbError, add_days, build_report, day_of,
+from remains import RemainsError, fetch_remains, parse_remains
+from core import (NO_TYPE, KeyStore, post_json, WaysheetCache, WbError, add_days, build_report, day_of,
                   extract_token, fines_summary, key_info, parse_percent, trip_view, valid_date)
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -155,6 +156,10 @@ def user_matches(u, t):
     return norm_name(t.get("driverName")) == norm_name(u.get("driverName") or u.get("name"))
 
 
+def iso_time(ts):
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat() if ts else None
+
+
 def fmt_rub(k):
     sign = "-" if k < 0 else ""
     rub, kop = divmod(abs(k), 100)
@@ -201,12 +206,18 @@ def report_text(name, date_from, date_to, row, percent, deduct_pending=True):
 
 # ---------------------------------------------------------------- приложение
 
+REMAINS_MIN_GAP = 60  # чаще раза в минуту остатки одного кабинета у WB не спрашиваем
+
+
 class App:
-    def __init__(self, data_dir, fetcher=None):
+    def __init__(self, data_dir, fetcher=None, post=None):
         self.db = Db(data_dir)
         self.db.migrate_single_key()
         self.cache = WaysheetCache(fetcher)
+        self.post = post or post_json
         self.login_failures = {}
+        self.remains_status = {}  # кабинет -> {"at", "ok", "error", "count"}
+        self.remains_locks = {}
 
     def percent_for(self, user):
         p = user.get("percent") if user else None
@@ -226,15 +237,25 @@ class App:
         except (OSError, ValueError):
             return {"items": []}
 
-    def save_remains(self, new_items, file_name, user_name):
-        """Новая выгрузка заменяет маршруты своих перевозчиков, остальные остаются."""
+    def save_remains(self, new_items, file_name, user_name, supplier_ids=()):
+        """Новые данные заменяют маршруты своих перевозчиков, остальные остаются.
+
+        supplier_ids — перевозчики, чьи маршруты заменить, даже если в новых
+        данных их маршрутов уже нет (все уехали).
+        """
         now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
         def names(i):
             return {c["name"] for c in i.get("carrierList") or []} or {""}
 
-        carriers = set().union(*(names(i) for i in new_items))
+        def ids(i):
+            return {str(c["id"]) for c in i.get("carrierList") or [] if c.get("id")}
+
+        carriers = set().union(*(names(i) for i in new_items)) if new_items else set()
+        replace_ids = {str(x) for x in supplier_ids}
         with self.db.lock:
-            kept = [i for i in self.load_remains()["items"] if not names(i) & carriers]
+            kept = [i for i in self.load_remains()["items"]
+                    if not names(i) & carriers and not ids(i) & replace_ids]
             for i in new_items:
                 i.update({"uploadedAt": now, "fileName": file_name, "uploadedBy": user_name})
             data = {"items": kept + new_items, "uploadedAt": now}
@@ -243,6 +264,66 @@ class App:
             tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
             os.replace(tmp, self.remains_file())
         return data
+
+    def supplier_ids(self, cab):
+        """ID поставщика кабинета: из настроек, иначе — из путевых WB за сегодня/вчера."""
+        if cab.get("supplierIds"):
+            return cab["supplierIds"]
+        token = self.db.token(cab["id"])
+        today = time.strftime("%Y-%m-%d")
+        found = set()
+        for day in (today, add_days(today, -1)):
+            try:
+                trips, _ = self.cache.get(cab["id"], token, day, add_days(day, 1))
+            except WbError:
+                break
+            found |= {str(t["supplierId"]) for t in trips if isinstance(t, dict) and str(t.get("supplierId") or "").isdigit()}
+            if found:
+                break
+        if found:
+            with self.db.lock:
+                cab["supplierIds"] = sorted(found)
+                self.db.save()
+            return cab["supplierIds"]
+        raise WbError("NO_SUPPLIER", f"{cab['name']}: не знаю ID поставщика. Укажите его в Настройки → Кабинеты "
+                                     "(число перед названием ИП в выгрузке остатков, например 10105118).")
+
+    def refresh_remains(self, cid, force=False):
+        """Остатки кабинета из WB. Не чаще раза в минуту, запросы одного кабинета — по очереди."""
+        cab = self.db.cabinet(cid)
+        if not cab:
+            return
+        lock = self.remains_locks.setdefault(cid, threading.Lock())
+        with lock:
+            st = self.remains_status.get(cid, {})
+            if st.get("tried") and time.time() - st["tried"] < (REMAINS_MIN_GAP if force else self.remains_interval()):
+                return
+            st = {**st, "tried": time.time()}
+            self.remains_status[cid] = st
+            try:
+                token = self.db.token(cid)
+                if not token:
+                    raise WbError("NO_KEY", f"{cab['name']}: ключ не задан.")
+                sup = self.supplier_ids(cab)
+                items = fetch_remains(token, sup, self.post)
+                self.save_remains(items, "автозагрузка WB", cab["name"], sup)
+                self.remains_status[cid] = {**st, "ok": time.time(), "error": None, "count": len(items)}
+            except WbError as e:
+                self.remains_status[cid] = {**st, "error": str(e)}
+
+    def remains_interval(self):
+        return max(1, int(self.db.data["settings"].get("remainsMinutes", 10))) * 60
+
+    def remains_loop(self):
+        """Фоновое обновление остатков по всем кабинетам."""
+        while True:
+            if self.db.data["settings"].get("remainsMinutes", 10):
+                for cab in list(self.db.cabinets()):
+                    try:
+                        self.refresh_remains(cab["id"])
+                    except Exception as e:  # фоновый поток не должен падать
+                        print("Остатки:", type(e).__name__, file=sys.stderr)
+            time.sleep(30)
 
     def parking_by_route(self):
         return {str(i["routeId"]): i.get("parking") for i in self.load_remains()["items"] if i.get("parking")}
@@ -560,6 +641,7 @@ def make_handler(app):
             info = {"id": c["id"], "name": c["name"],
                     "lastSuccess": app.cache.last_success.get(c["id"])}
             if admin:
+                info["supplierIds"] = c.get("supplierIds") or []
                 try:
                     info["key"] = key_info(db.key_store(c["id"]).load())
                 except Exception:
@@ -584,6 +666,14 @@ def make_handler(app):
                 raise bad("NO_CRYPTO", str(e), 500)
             app.cache.clear(cid)
 
+        @staticmethod
+        def parse_suppliers(raw):
+            parts = re.split(r"[\s,;]+", str(raw or "").strip()) if not isinstance(raw, list) else [str(x) for x in raw]
+            parts = [p for p in parts if p]
+            if any(not p.isdigit() for p in parts):
+                raise bad("BAD_CABINET", "ID поставщика — число, например 10105118.")
+            return parts
+
         def api_cabinet_create(self, q, _):
             self.need_admin()
             b = self.body()
@@ -591,9 +681,10 @@ def make_handler(app):
             if not name:
                 raise bad("BAD_CABINET", "Укажите название кабинета, например «ИП Иванов Иван».")
             cid = db.new_id()
+            sup = self.parse_suppliers(b.get("supplierIds"))
             self.save_key(cid, b.get("value"))
             with db.lock:
-                db.cabinets().append({"id": cid, "name": name})
+                db.cabinets().append({"id": cid, "name": name, "supplierIds": sup})
                 db.save()
             return self.cabinet_info(db.cabinet(cid), True)
 
@@ -605,6 +696,12 @@ def make_handler(app):
             b = self.body()
             if b.get("value"):
                 self.save_key(cid, b["value"])
+            if "supplierIds" in b:
+                sup = self.parse_suppliers(b["supplierIds"])
+                with db.lock:
+                    c["supplierIds"] = sup
+                    db.save()
+                app.remains_status.pop(cid, None)
             if b.get("name"):
                 with db.lock:
                     c["name"] = " ".join(str(b["name"]).split())
@@ -623,7 +720,8 @@ def make_handler(app):
         # ======== настройки
         def api_settings(self, q, _):
             self.need_user()
-            return {"percent": db.data["settings"]["percent"], "deductPending": app.deduct_pending()}
+            return {"percent": db.data["settings"]["percent"], "deductPending": app.deduct_pending(),
+                    "remainsMinutes": db.data["settings"].get("remainsMinutes", 10)}
 
         def api_settings_save(self, q, _):
             self.need_admin()
@@ -636,6 +734,14 @@ def make_handler(app):
                 changes["percent"] = p
             if "deductPending" in b:
                 changes["deductPending"] = bool(b["deductPending"])
+            if "remainsMinutes" in b:
+                try:
+                    m = int(b["remainsMinutes"])
+                except (TypeError, ValueError):
+                    m = -1
+                if m != 0 and not 5 <= m <= 1440:
+                    raise bad("BAD_SETTINGS", "Обновление остатков: 0 (выключено) или от 5 до 1440 минут.")
+                changes["remainsMinutes"] = m
             with db.lock:
                 db.data["settings"].update(changes)
                 db.save()
@@ -743,7 +849,17 @@ def make_handler(app):
             data = app.load_remains()
             items = sorted(data["items"], key=lambda i: -(i.get("shk") or 0))
             carriers = sorted({c["name"] for i in items for c in i["carrierList"]})
-            return {"items": items, "carriers": carriers, "uploadedAt": data.get("uploadedAt")}
+            status = [{"cabinet": c["name"], "ok": iso_time(st.get("ok")), "error": st.get("error"),
+                       "count": st.get("count")}
+                      for c in db.cabinets() for st in [app.remains_status.get(c["id"], {})]]
+            return {"items": items, "carriers": carriers, "uploadedAt": data.get("uploadedAt"),
+                    "auto": status, "autoMinutes": db.data["settings"].get("remainsMinutes", 10)}
+
+        def api_remains_refresh(self, q, _):
+            self.need_user()
+            for c in list(db.cabinets()):
+                app.refresh_remains(c["id"], force=True)
+            return self.api_remains(q, None)
 
         def api_remains_upload(self, q, _):
             u = self.need_admin()
@@ -820,6 +936,7 @@ def make_handler(app):
         ("GET", "/api/remains"): Handler.api_remains,
         ("POST", "/api/remains"): Handler.api_remains_upload,
         ("DELETE", "/api/remains"): Handler.api_remains_clear,
+        ("POST", "/api/remains/refresh"): Handler.api_remains_refresh,
     }
     return Handler
 
@@ -837,6 +954,7 @@ def make_server(host, port, app=None):
 
 def main():
     app = App(DATA_DIR)
+    threading.Thread(target=app.remains_loop, daemon=True).start()
     server = None
     port = PORT
     # Если порт занят (например, сайт уже запущен в другом окне), пробуем следующие.

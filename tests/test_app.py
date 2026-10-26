@@ -48,6 +48,16 @@ REMAINS_HEADER = ["ID лог объекта", "Имя лог объекта", "I
                   "Среднесуточное накопление, л", "Перевозчики", "Дистанция в сторону, км"]
 
 
+def routecar(rid, shk, parking, supplier=("777", "ИП Тестов Тест")):
+    """Строка ответа WB by-routecar (формат как в настоящем ответе)."""
+    return {"routecar": {"id": str(rid), "src": {"office": {"id": 1, "name": "СЦ Тестовый"}},
+                         "auto_request": {"enabled": False, "requests": []}, "parking_numbers": [parking],
+                         "count_tares": "50", "count_kgt": "26", "count_shk": str(shk), "normative_count_shk": "1132",
+                         "total_volume": "4525552", "average_daily_volume": "445113069",
+                         "to_normative_shk_percentage": 125, "direct_distance": 32193,
+                         "suppliers": [{"id": supplier[0], "name": supplier[1]}]}}
+
+
 def trip(**over):
     t = {"id": 1, "driverName": "Иванов И.", "driverId": 1, "vehicleNumberPlate": "А001АА777",
          "openDt": "2026-10-25T08:00:00", "closeDt": "2026-10-25T18:00:00",
@@ -176,6 +186,29 @@ class RemainsTest(unittest.TestCase):
             remains.parse_remains(make_xlsx([["что-то"], [1]]), "x.xlsx")
         csv_items = remains.parse_remains("ID маршрута;Кол-во ШК;Парковка\n7;100;5\n".encode(), "o.csv")
         self.assertEqual((csv_items[0]["routeId"], csv_items[0]["shk"]), (7, 100))
+
+
+class RemainsAutoTest(unittest.TestCase):
+    def test_fetch_pages_and_units(self):
+        import remains
+        calls = []
+
+        def post(url, body, token):
+            calls.append(body)
+            if body["meta"]["skip"] == 0:
+                return {"data": [routecar(1, 1415, 36)], "meta": {"total_items": 2, "has_next": True}}
+            return {"data": [routecar(2, 729, 226)], "meta": {"total_items": 2, "has_next": False}}
+
+        items = remains.fetch_remains("tok", ["777"], post)
+        self.assertEqual([i["routeId"] for i in items], [1, 2])
+        self.assertEqual(calls[0]["data"]["supplier_ids"], [777])
+        self.assertEqual([c["meta"]["skip"] for c in calls], [0, 50])
+        i = items[0]
+        self.assertEqual((i["parking"], i["boxes"], i["kgt"], i["shk"], i["shkNorm"], i["volume"], i["distance"]),
+                         ("36", 50, 26, 1415, 1132, 4525.552, 32.193))
+        self.assertEqual(i["carrierList"], [{"id": "777", "name": "ИП Тестов Тест"}])
+        with self.assertRaises(core.WbError):
+            remains.fetch_remains("tok", ["777"], lambda u, b, t: {"error": "x"})
 
 
 class KeyTest(unittest.TestCase):
@@ -388,6 +421,55 @@ class ServerTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             driver.open(r)
         self.assertEqual(cm.exception.code, 403)
+
+    def test_remains_auto(self):
+        admin, cid, jwt = self.setup_admin()
+        posts = []
+        state = {"rows": [routecar(10, 1415, 36), routecar(11, 700, 5)]}
+
+        def post(url, body, token):
+            posts.append((url, body, token))
+            return {"data": state["rows"], "meta": {"has_next": False}}
+
+        self.app.post = post
+        # ID поставщика не задан и в путевых его нет — понятная ошибка.
+        status, r = self.req(admin, "/api/remains/refresh", "POST", {})
+        self.assertEqual(status, 200)
+        self.assertIn("ID поставщика", r["auto"][0]["error"])
+        self.assertEqual(posts, [])
+
+        self.assertEqual(self.req(admin, f"/api/cabinets/{cid}", "PUT", {"supplierIds": "abc"})[0], 400)
+        self.assertEqual(self.req(admin, f"/api/cabinets/{cid}", "PUT", {"supplierIds": "777"})[0], 200)
+        status, r = self.req(admin, "/api/remains/refresh", "POST", {})
+        self.assertEqual(([i["routeId"] for i in r["items"]], r["auto"][0]["count"], r["auto"][0]["error"]),
+                         ([10, 11], 2, None))
+        self.assertEqual(posts[0][2], jwt)
+        self.assertTrue(posts[0][0].endswith("/last-mile-report/v1/report/by-routecar"))
+
+        # Чаще раза в минуту не спрашиваем.
+        self.req(admin, "/api/remains/refresh", "POST", {})
+        self.assertEqual(len(posts), 1)
+
+        # Маршрут уехал — пропадает и у нас.
+        state["rows"] = [routecar(10, 100, 36)]
+        self.app.remains_status[cid]["tried"] -= 120
+        _, r = self.req(admin, "/api/remains/refresh", "POST", {})
+        self.assertEqual([i["routeId"] for i in r["items"]], [10])
+        state["rows"] = []
+        self.app.remains_status[cid]["tried"] -= 120
+        _, r = self.req(admin, "/api/remains/refresh", "POST", {})
+        self.assertEqual(r["items"], [])
+
+        # ID поставщика находится сам по путевым, если WB его там присылает.
+        self.req(admin, f"/api/cabinets/{cid}", "PUT", {"supplierIds": ""})
+        self.app.cache.fetcher = lambda f, t, tok: [trip(supplierId=888)]
+        self.app.cache.clear()
+        self.app.refresh_remains(cid, force=True)
+        self.assertEqual(posts[-1][1]["data"]["supplier_ids"], [888])
+        self.assertEqual(self.app.db.cabinet(cid)["supplierIds"], ["888"])
+
+        self.assertEqual(self.req(admin, "/api/settings", "POST", {"remainsMinutes": 2})[0], 400)
+        self.assertEqual(self.req(admin, "/api/settings", "POST", {"remainsMinutes": 15})[1]["remainsMinutes"], 15)
 
     def test_static(self):
         with urllib.request.urlopen(self.base + "/") as r:

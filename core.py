@@ -450,13 +450,9 @@ def _snippet(raw):
     return re.sub(r"\s+", " ", text).strip()[:200]
 
 
-def fetch(date_from, date_to, token):
-    body = json.dumps({
-        "from": date_from, "to": date_to, "isNewMotivation": True,
-        "isNotConfirmedWithTransportRequests": None, "officeId": None,
-        "paymentTypeId": None, "routeId": None, "supplierId": None,
-    }).encode()
-    req = urllib.request.Request(URL, data=body, method="POST", headers={
+def post_json(url, body, token, timeout=60):
+    """POST в API WB Логистики с ключом кабинета; ответ — разобранный JSON."""
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST", headers={
         "Authorization": "Bearer " + token,
         "Content-Type": "application/json;charset=utf-8",
         "Accept": "application/json, text/plain, */*",
@@ -464,7 +460,7 @@ def fetch(date_from, date_to, token):
         "Referer": "https://ol.wildberries.ru/",
     })
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read()
     except urllib.error.HTTPError as e:
         detail = _snippet(e.read() or b"")
@@ -479,9 +475,17 @@ def fetch(date_from, date_to, token):
         raise WbError("WB_NETWORK", "Нет связи с WB. Проверьте интернет. Если сайт запущен на хостинге, "
                                     "WB может не пускать такие запросы — запустите на домашнем компьютере.")
     try:
-        data = json.loads(raw)
+        return json.loads(raw)
     except ValueError:
         raise WbError("WB_FORMAT", "WB вернул не JSON — возможно, API изменился.")
+
+
+def fetch(date_from, date_to, token):
+    data = post_json(URL, {
+        "from": date_from, "to": date_to, "isNewMotivation": True,
+        "isNotConfirmedWithTransportRequests": None, "officeId": None,
+        "paymentTypeId": None, "routeId": None, "supplierId": None,
+    }, token)
     if isinstance(data, dict):
         data = next((data[k] for k in ("data", "items", "result") if isinstance(data.get(k), list)), None)
     if not isinstance(data, list):

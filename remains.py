@@ -8,6 +8,8 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 
+from core import WbError
+
 NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
       "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships"}
 REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
@@ -169,3 +171,64 @@ def parse_remains(data, filename=""):
     if not items:
         raise RemainsError("В файле нет строк с маршрутами.")
     return items
+
+
+# ---------------------------------------------------------------- автозагрузка из WB
+
+REMAINS_URL = "https://logistics.wb.ru/router-bff/last-mile-report/v1/report/by-routecar"
+PAGE_SIZE = 50
+MAX_PAGES = 40
+
+
+def _int(v):
+    try:
+        return int(str(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def _scaled(v, divisor):
+    n = _int(v)
+    return None if n is None else round(n / divisor, 3)
+
+
+def routecar_item(rc):
+    """Строка ответа by-routecar → тот же вид, что и строка выгрузки Excel."""
+    office = (rc.get("src") or {}).get("office") or {}
+    auto = rc.get("auto_request") or {}
+    parking = [str(p) for p in rc.get("parking_numbers") or []]
+    return {
+        "officeId": office.get("id"),
+        "officeName": office.get("name") or "",
+        "routeId": _int(rc.get("id")),
+        "autoRequests": "да" if auto.get("enabled") else "нет",
+        "arrivalTime": "",
+        "parking": ", ".join(parking),
+        "boxes": _int(rc.get("count_tares")),
+        "kgt": _int(rc.get("count_kgt")),
+        "shk": _int(rc.get("count_shk")),
+        "shkNorm": _int(rc.get("normative_count_shk")),
+        "normPercent": rc.get("to_normative_shk_percentage"),
+        "volume": _scaled(rc.get("total_volume"), 1000),               # мл → л
+        "dailyVolume": _scaled(rc.get("average_daily_volume"), 1000),  # мл → л
+        "distance": _scaled(rc.get("direct_distance"), 1000),          # м → км
+        "carrierList": [{"id": str(s.get("id")) if s.get("id") is not None else None,
+                         "name": (s.get("name") or "").strip()} for s in rc.get("suppliers") or []],
+    }
+
+
+def fetch_remains(token, supplier_ids, post):
+    """Все маршруты кабинета из отчёта «Остатки» (постранично)."""
+    items = []
+    for page in range(MAX_PAGES):
+        data = post(REMAINS_URL, {
+            "data": {"supplier_ids": [int(s) for s in supplier_ids], "src_office_ids": [], "geo_division_ids": []},
+            "meta": {"page_size": PAGE_SIZE, "skip": page * PAGE_SIZE, "sorting": {"shk_count": "SORT_ORDER_DESC"}},
+        }, token)
+        rows = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise WbError("WB_FORMAT", "Неожиданный формат ответа WB по остаткам — возможно, API изменился.")
+        items += [routecar_item(r["routecar"]) for r in rows if isinstance(r, dict) and isinstance(r.get("routecar"), dict)]
+        if not (data.get("meta") or {}).get("has_next"):
+            break
+    return [i for i in items if i["routeId"] is not None]

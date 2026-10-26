@@ -420,7 +420,7 @@
         } catch (e) { fill(status, msg(e.message)); }
         btn.disabled = false;
       } });
-      upload = h('details', {}, h('summary', { text: 'Загрузить выгрузку из WB' }),
+      upload = h('details', {}, h('summary', { text: 'Загрузить выгрузку Excel вручную' }),
         h('p', { class: 'small muted', text: 'Скачайте на ol.wildberries.ru выгрузку остатков (Excel) и загрузите её сюда. '
           + 'Маршруты тех же перевозчиков заменятся, остальные останутся.' }),
         h('div', { class: 'field' }, file),
@@ -432,9 +432,18 @@
           } })));
     }
 
+    const auto = h('div', { class: 'status' });
+    const refresh = h('button', { class: 'btn light block', type: 'button', text: '⟳ Обновить из WB', onclick: async () => {
+      refresh.disabled = true;
+      refresh.textContent = '⟳ Загружаю…';
+      try { show(await api('/api/remains/refresh', { method: 'POST' })); } catch (e) { fill(auto, msg(e.message)); }
+      refresh.disabled = false;
+      refresh.textContent = '⟳ Обновить из WB';
+    } });
+
     main.append(h('div', { class: 'card' },
       head('📦', 'Остатки', 'Маршруты, коробки, КГТ и ШК'),
-      upload, status,
+      refresh, auto, upload, status,
       h('div', { class: 'grid2' }, carrier, search)), body);
 
     function draw() {
@@ -454,13 +463,20 @@
 
     async function load() {
       try {
-        data = await api('/api/remains');
-        const keep = carrier.value;
-        carrier.replaceChildren(h('option', { value: '', text: 'Все перевозчики' }),
-          ...data.carriers.map((c) => h('option', { value: c, text: c, selected: c === keep })));
-        if (data.uploadedAt && !status.firstChild) status.textContent = `Последняя загрузка: ${localTime(data.uploadedAt)}`;
-        draw();
+        show(await api('/api/remains'));
       } catch (e) { fill(status, msg(e.message)); }
+    }
+
+    function show(r) {
+      data = r;
+      fill(auto,
+        ...r.auto.map((a) => h('div', { class: a.error ? 'msg error' : '', text: a.error
+          ? a.error : `${a.cabinet}: ${a.ok ? `обновлено ${localTime(a.ok)}, маршрутов ${a.count}` : 'ещё не обновлялось'}` })),
+        h('div', { text: r.autoMinutes ? `Автообновление каждые ${r.autoMinutes} мин.` : 'Автообновление выключено.' }));
+      const keep = carrier.value;
+      carrier.replaceChildren(h('option', { value: '', text: 'Все перевозчики' }),
+        ...data.carriers.map((c) => h('option', { value: c, text: c, selected: c === keep })));
+      draw();
     }
     load();
   }
@@ -649,6 +665,7 @@
     const list = h('div');
     const name = h('input', { class: 'input', placeholder: 'ИП Иванов Иван' });
     const key = h('input', { class: 'input', type: 'password', placeholder: 'https://ol.wildberries.ru/…bearer=…', autocomplete: 'off', spellcheck: 'false' });
+    const sup = h('input', { class: 'input', inputmode: 'numeric', placeholder: 'Например 10105118 — можно оставить пустым' });
     box.append(h('div', { class: 'card' },
       h('div', { class: 'label', text: 'Кабинеты WB' }),
       h('p', { class: 'small muted', text: 'Для каждого ИП: откройте ol.wildberries.ru под этим кабинетом, скопируйте адрес страницы целиком (в нём есть bearer=) и вставьте сюда. Ключ хранится на сервере в зашифрованном виде.' }),
@@ -656,10 +673,11 @@
       h('details', {}, h('summary', { text: '+ Добавить кабинет' }),
         h('label', { class: 'field' }, h('span', { text: 'Название' }), name),
         h('label', { class: 'field' }, h('span', { text: 'Адрес страницы с bearer= или ключ' }), key),
+        h('label', { class: 'field' }, h('span', { text: 'ID поставщика (для остатков)' }), sup),
         h('button', { class: 'btn light', type: 'button', text: 'Добавить', onclick: async () => {
           try {
-            await api('/api/cabinets', { method: 'POST', body: { name: name.value, value: key.value } });
-            name.value = ''; key.value = '';
+            await api('/api/cabinets', { method: 'POST', body: { name: name.value, value: key.value, supplierIds: sup.value } });
+            name.value = ''; key.value = ''; sup.value = '';
             fill(out, msg('Кабинет добавлен.', 'ok'));
             draw();
           } catch (e) { fill(out, msg(e.message)); }
@@ -672,13 +690,23 @@
         ...cabinets.map((c) => {
           const newKey = h('input', { class: 'input', type: 'password', placeholder: 'Новый адрес с bearer=…', autocomplete: 'off' });
           const rawDate = h('input', { class: 'input', type: 'date', value: shift(today(), -1) });
+          const supEdit = h('input', { class: 'input grow', inputmode: 'numeric', value: c.supplierIds.join(', '), placeholder: 'ID поставщика' });
           const bad = !c.key.configured || c.key.expired;
           return h('div', { class: 'list-item' },
             h('div', { class: 'row between' },
               h('span', { class: 't', text: c.name }),
               h('span', { class: `small ${bad ? 'pill warn' : 'muted'}`, text: keyText(c.key) })),
-            h('details', {}, h('summary', { text: 'Обновить ключ / удалить' }),
+            h('div', { class: 'small muted', text: `ID поставщика: ${c.supplierIds.length ? c.supplierIds.join(', ') : 'определится сам по путевым'}` }),
+            h('details', {}, h('summary', { text: 'Обновить ключ / ID поставщика / удалить' }),
               h('div', { class: 'field' }, newKey),
+              h('div', { class: 'row' }, supEdit,
+                h('button', { class: 'btn small', type: 'button', text: 'Сохранить ID', onclick: async () => {
+                  try {
+                    await api(`/api/cabinets/${c.id}`, { method: 'PUT', body: { supplierIds: supEdit.value } });
+                    fill(out, msg('ID поставщика сохранён.', 'ok'));
+                    draw();
+                  } catch (e) { fill(out, msg(e.message)); }
+                } })),
               h('div', { class: 'row' },
                 h('button', { class: 'btn small light', type: 'button', text: 'Сохранить ключ', onclick: async () => {
                   try {
@@ -793,10 +821,12 @@
     const out = h('div');
     const pct = h('input', { class: 'input', type: 'number', min: '0', max: '100', step: '0.01' });
     const pending = h('input', { type: 'checkbox' });
+    const minutes = h('input', { class: 'input', type: 'number', min: '0', max: '1440', step: '1' });
     try {
       const s = await api('/api/settings');
       pct.value = s.percent;
       pending.checked = s.deductPending;
+      minutes.value = s.remainsMinutes;
     } catch { pct.value = 20; pending.checked = true; }
     pending.addEventListener('change', async () => {
       try {
@@ -816,6 +846,15 @@
         } })),
       h('label', { class: 'row check' }, pending,
         h('span', { text: 'Вычитать штрафы, которые WB ещё рассматривает' })),
+      h('div', { class: 'label', text: 'Остатки: автообновление, минут' }),
+      h('p', { class: 'small muted', text: '0 — выключено, иначе от 5 до 1440.' }),
+      h('div', { class: 'row' }, h('div', { class: 'grow' }, minutes),
+        h('button', { class: 'btn', type: 'button', text: 'Сохранить', onclick: async () => {
+          try {
+            const s = await api('/api/settings', { method: 'POST', body: { remainsMinutes: minutes.value } });
+            fill(out, msg(s.remainsMinutes ? `Остатки обновляются каждые ${s.remainsMinutes} мин.` : 'Автообновление остатков выключено.', 'ok'));
+          } catch (e) { fill(out, msg(e.message)); }
+        } })),
       out));
   }
 
