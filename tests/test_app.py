@@ -259,18 +259,40 @@ class ChunkTest(unittest.TestCase):
                 raise core.WbError("WB_HTTP", "Ошибка сервера WB: 400.", 400)
             return [{"id": f}, {"id": "same"}]
 
+        self._check_split(fetcher, calls)
+
+    def test_period_split_on_wb_500_two_weeks(self):
+        core._max_span["days"] = 14
+        calls = []
+
+        def fetcher(f, t, tok):
+            calls.append((f, t))
+            if core._days(f, t) > 7:
+                raise core.WbError("WB_HTTP", "Ошибка сервера WB: 500. (WB ответил 500: P0001: "
+                                   "way_sheets.get_price_way_sheet_by_period: Максимальный период две недели)", 500)
+            return [{"id": f}, {"id": "same"}]
+
+        self._check_split(fetcher, calls, limit=7)
+        # Обычная 500 (сбой WB) — не дробим, а показываем ошибку.
+        with self.assertRaises(core.WbError):
+            core.fetch_in_chunks(lambda f, t, tok: (_ for _ in ()).throw(core.WbError("WB_HTTP", "Ошибка сервера WB: 500.", 500)),
+                                 "2026-10-01", "2026-10-05", "tok")
+        core._max_span["days"] = 14
+
+    def _check_split(self, fetcher, calls, limit=10):
+
         items = core.fetch_in_chunks(fetcher, "2026-08-17", "2026-10-27", "tok")
-        ok = [c for c in calls if core._days(*c) <= 10]
+        ok = [c for c in calls if core._days(*c) <= limit]
         self.assertEqual(ok[0][0], "2026-08-17")
         self.assertEqual(ok[-1][1], "2026-10-27")
         for a, b in zip(ok, ok[1:]):
             self.assertEqual(a[1], b[0])  # куски идут встык, без дыр
         self.assertEqual(sum(1 for i in items if i["id"] == "same"), 1)
-        self.assertLessEqual(core._max_span["days"], 10)
+        self.assertLessEqual(core._max_span["days"], limit)
         with self.assertRaises(core.WbError):  # другие ошибки не глотаем
             core.fetch_in_chunks(lambda f, t, tok: (_ for _ in ()).throw(core.WbError("KEY_EXPIRED", "x", 401)),
                                  "2026-10-01", "2026-10-02", "tok")
-        core._max_span["days"] = 31
+        core._max_span["days"] = 14
 
 
 class KeyTest(unittest.TestCase):

@@ -510,9 +510,13 @@ def fetch(date_from, date_to, token):
     return data
 
 
-# Самый длинный период (в днях), который WB принял за этот запуск. WB отвечает 400
-# на слишком длинный период, а предел не документирован — узнаём его по ходу.
-_max_span = {"days": 31}
+# Самый длинный период (в днях), который WB принимает за раз. WB пишет «Максимальный
+# период две недели» (ответ 500, иногда 400); если откажет и на меньшем — уменьшаем по ходу.
+_max_span = {"days": 14}
+
+
+def _period_too_long(e):
+    return e.status == 400 or (e.status == 500 and "период" in str(e).lower())
 
 
 def _days(date_from, date_to):
@@ -522,7 +526,7 @@ def _days(date_from, date_to):
 def fetch_in_chunks(fetcher, date_from, date_to, token):
     """Путевые за [date_from, date_to): длинный период — кусками, которые WB принимает.
 
-    На ответ 400 кусок делится пополам, пока не станет в один день.
+    Если WB отвечает, что период слишком длинный, кусок делится пополам, пока не станет в один день.
     """
     span = _days(date_from, date_to)
     if span > _max_span["days"]:
@@ -535,7 +539,7 @@ def fetch_in_chunks(fetcher, date_from, date_to, token):
     try:
         items = fetcher(date_from, date_to, token)
     except WbError as e:
-        if e.status != 400 or span <= 1:
+        if not _period_too_long(e) or span <= 1:
             raise
         _max_span["days"] = max(1, span // 2)
         return fetch_in_chunks(fetcher, date_from, date_to, token)
