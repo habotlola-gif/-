@@ -95,6 +95,44 @@ class CalcTest(unittest.TestCase):
                          [{"name": "СЦ Подольск", "id": "123"}, {"name": "ПВЗ Ленина 5", "id": "456"}])
 
 
+class FineTest(unittest.TestCase):
+    def test_status(self):
+        self.assertIsNone(core.fine_status(trip()))
+        self.assertEqual(core.fine_status(trip(fineSum=10, isFineUnderConsideration=True, isApproved=True)), "pending")
+        self.assertEqual(core.fine_status(trip(fineSum=10, isApproved=True)), "approved")
+        self.assertEqual(core.fine_status(trip(fineSum=10, isApproved=False)), "unconfirmed")
+        self.assertEqual(core.fine_status(trip(fineSum=10)), "charged")
+        self.assertEqual(core.fine_status(trip(isFine=True)), "charged")
+
+    def test_parts(self):
+        self.assertEqual(core.fine_parts(trip(fineSum=100)), [{"type": "Без вида", "sum": 10000}])
+        self.assertEqual(core.fine_parts(trip(fineSum=100, fineTypeName="Брак")), [{"type": "Брак", "sum": 10000}])
+        listed = trip(fineSum=1000, fines=[{"typeName": "Штраф за брак", "sum": 700},
+                                           {"name": "Опоздание", "amount": "200,50"}])
+        self.assertEqual(core.fine_parts(listed), [{"type": "Штраф за брак", "sum": 70000},
+                                                   {"type": "Опоздание", "sum": 20050},
+                                                   {"type": "Без вида", "sum": 9950}])
+        # Список больше fineSum — не верим списку, главная сумма — fineSum.
+        self.assertEqual(core.fine_parts(trip(fineSum=10, fines=[{"name": "X", "sum": 50}])),
+                         [{"type": "Без вида", "sum": 1000}])
+        self.assertEqual(core.fine_parts(trip(fineSum=None, fines=[{"name": "X", "sum": 5}])),
+                         [{"type": "X", "sum": 500}])
+
+    def test_pending_not_deducted(self):
+        trips = [trip(totalPrice=1000, fineSum=100, isApproved=True, fineTypeName="Штраф за брак"),
+                 trip(totalPrice=1000, fineSum=50, isFineUnderConsideration=True)]
+        r = core.build_report(trips, "2026-10-25", "2026-10-25", 20, deduct_pending=False)
+        d = r["drivers"][0]
+        self.assertEqual((d["fines"], d["finesPending"], d["payout"]), (10000, 5000, 200000 - 40000 - 10000))
+        self.assertEqual(d["finesByType"], [{"type": "Штраф за брак", "sum": 10000}])
+        r = core.build_report(trips, "2026-10-25", "2026-10-25", 20)
+        self.assertEqual(r["drivers"][0]["fines"], 15000)
+        text = app.report_text("Иванов", "2026-10-25", "2026-10-25", r["drivers"][0], 20)
+        self.assertIn("Штраф за брак всего 100,00", text)
+        self.assertIn("Штраф без указания вида всего 50,00", text)
+        self.assertIn("В т.ч. на рассмотрении: 50,00", text)
+
+
 class KeyTest(unittest.TestCase):
     def test_extract(self):
         jwt = make_jwt(2000000000)

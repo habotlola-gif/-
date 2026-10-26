@@ -16,6 +16,9 @@
     return node;
   };
 
+  // replaceChildren превращает null в текст «null» — отбрасываем пустые.
+  const fill = (node, ...kids) => node.replaceChildren(...kids.flat().filter((k) => k !== null && k !== undefined && k !== false));
+
   function rub(kop) {
     const sign = kop < 0 ? '-' : '';
     const abs = Math.abs(kop);
@@ -43,6 +46,17 @@
       return new Date(s).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' });
     }
     return `${m[3]}.${m[2]}.${m[1]}, ${m[4]}:${m[5]}:${m[6] || '00'}`;
+  }
+
+  const STATUS_CLASS = { pending: 'warn', unconfirmed: 'warn', approved: 'bad', charged: '' };
+
+  function fineStatusPill(t) {
+    return t.fineStatus ? h('span', { class: `pill ${STATUS_CLASS[t.fineStatus] || ''}`, text: t.fineStatusText }) : null;
+  }
+
+  function fineTypeLines(parts) {
+    return (parts || []).map((p) => h('div', { class: 'small kv' },
+      h('span', { class: 'muted', text: p.type }), h('span', { text: rub(p.sum) })));
   }
 
   const localTime = (isoStr) => (isoStr ? new Date(isoStr).toLocaleString('ru-RU') : '—');
@@ -147,7 +161,7 @@
         const cls = [s === from || s === to ? 'edge' : '', s > from && s < to ? 'in' : '', s === today() ? 'today' : ''].join(' ');
         cells.push(h('button', { type: 'button', class: cls, text: String(d), onclick: () => pick(s) }));
       }
-      bg.replaceChildren(h('div', { class: 'modal' },
+      fill(bg, h('div', { class: 'modal' },
         h('div', { class: 'row between' },
           h('h2', { text: 'Выберите период' }),
           h('button', { class: 'icon-btn', type: 'button', text: '✕', onclick: close })),
@@ -197,14 +211,14 @@
     const out = h('div');
     const form = h('form', { class: 'card', onsubmit: async (e) => {
       e.preventDefault();
-      out.replaceChildren();
+      fill(out, );
       try {
         const body = { login: login.value, password: pass.value };
         if (needsSetup) body.name = name.value;
         const r = await api(needsSetup ? '/api/setup' : '/api/login', { method: 'POST', body });
         state.me = r.user;
         renderApp();
-      } catch (err) { out.replaceChildren(msg(err.message)); }
+      } catch (err) { fill(out, msg(err.message)); }
     } },
     needsSetup ? h('p', { class: 'small muted', text: 'Первый запуск: создайте администратора. Он добавит кабинеты WB и сотрудников.' }) : null,
     needsSetup ? h('label', { class: 'field' }, h('span', { text: 'ФИО' }), name) : null,
@@ -302,7 +316,7 @@
     card.append(...[sel, periodField(() => renderApp()), body].filter(Boolean));
 
     async function load() {
-      body.replaceChildren(h('div', { class: 'status', text: 'Загружаю…' }));
+      fill(body, h('div', { class: 'status', text: 'Загружаю…' }));
       try {
         const q = new URLSearchParams({ from: state.period.from, to: state.period.to });
         if (state.employee) q.set('employee', state.employee);
@@ -311,7 +325,7 @@
           copyBtn.textContent = (await copyText(r.text)) ? 'Скопировано' : 'Не удалось скопировать';
           setTimeout(() => { copyBtn.textContent = 'Копировать отчет'; }, 2000);
         } });
-        body.replaceChildren(
+        fill(body, 
           ...r.warnings.map((w) => msg(w, 'warn')),
           h('div', { class: 'stat' }, h('div', { class: 'label', text: 'Путевых записей' }), h('div', { class: 'value', text: String(r.tripsCount) })),
           h('div', { class: 'stat' }, h('div', { class: 'label', text: 'К выплате' }), h('div', { class: 'value', text: rub(r.payout) })),
@@ -322,9 +336,10 @@
             h('summary', { text: 'Путевые в отчёте' }),
             ...r.trips.map((t) => h('div', { class: 'list-item small' },
               h('div', { class: 'row between' }, h('span', { text: `№ ${t.id}` }), h('b', { text: rub(t.price) })),
-              h('div', { class: 'muted', text: `Закрыт ${dt(t.closeDt)}${t.fine ? ` · штраф ${rub(t.fine)}` : ''}` })))) : null);
+              h('div', { class: 'muted', text: `Закрыт ${dt(t.closeDt)}${t.fine ? ` · штраф ${rub(t.fine)}` : ''}` }),
+              t.fine ? fineStatusPill(t) : null))) : null);
       } catch (e) {
-        body.replaceChildren(msg(e.message));
+        fill(body, msg(e.message));
       }
     }
     load();
@@ -341,18 +356,26 @@
     try {
       const q = new URLSearchParams({ from: state.period.from, to: state.period.to });
       const r = await api(`/api/fines?${q}`);
-      body.replaceChildren(
+      fill(body, 
         ...r.warnings.map((w) => msg(w, 'warn')),
         h('div', { class: 'stat' }, h('div', { class: 'label', text: 'Сумма удержаний' }), h('div', { class: 'value', text: rub(r.total) })),
+        r.items.length ? h('div', {},
+          h('div', { class: 'list-item' }, h('div', { class: 'label', text: 'По статусу' }),
+            ...r.byStatus.map((x) => h('div', { class: 'small kv' },
+              h('span', { class: 'muted', text: x.text }), h('span', { text: rub(x.sum) })))),
+          h('div', { class: 'list-item' }, h('div', { class: 'label', text: 'По виду' }), ...fineTypeLines(r.byType))) : null,
+        r.byStatus.some((x) => x.status === 'pending') ? h('p', { class: 'small muted', text: r.deductPending
+          ? 'Штрафы на рассмотрении вычитаются из зарплаты (меняется в настройках).'
+          : 'Штрафы на рассмотрении из зарплаты не вычитаются, пока WB их не подтвердит.' }) : null,
         r.items.length ? null : h('p', { class: 'muted', text: 'За период удержаний нет.' }),
         ...r.items.map((t) => h('div', { class: 'list-item' },
           h('div', { class: 'row between' }, h('span', { class: 't', text: `№ ${t.id}` }), h('b', { text: rub(t.fine) })),
           state.me.role === 'admin' ? h('div', { text: t.driverName }) : null,
-          h('div', { class: 'small muted', text: `${t.cabinetName} · закрыт ${dt(t.closeDt)}` }),
-          t.isFineUnderConsideration ? h('span', { class: 'pill warn', text: 'на рассмотрении' }) : null,
-          t.isApproved === false ? h('span', { class: 'pill warn', text: 'не подтверждён' }) : null)));
+          h('div', { class: 'small muted', text: `${t.cabinetName} · ${t.closeDt ? `закрыт ${dt(t.closeDt)}` : `в пути с ${dt(t.openDt)}`}` }),
+          h('div', {}, fineStatusPill(t)),
+          ...fineTypeLines(t.fineParts))));
     } catch (e) {
-      body.replaceChildren(msg(e.message));
+      fill(body, msg(e.message));
     }
   }
 
@@ -390,14 +413,14 @@
       for (const c of cabinets) cab.append(h('option', { value: c.id, text: c.name, selected: c.id === state.cabinet }));
       if (!cabinets.some((c) => c.id === state.cabinet)) state.cabinet = '';
       if (!cabinets.length) status.textContent = 'Кабинеты ещё не добавлены. Администратор добавляет их в настройках.';
-    } catch (e) { status.replaceChildren(msg(e.message)); }
+    } catch (e) { fill(status, msg(e.message)); }
 
     async function load() {
       if (!state.cabinet) { status.textContent = 'Выбери кабинет.'; return; }
       btn.disabled = true;
       btn.textContent = '⟳ Загружаю…';
       status.textContent = 'Ставлю запрос в очередь…';
-      list.replaceChildren();
+      fill(list, );
       try {
         const r = await api(`/api/waysheets?${new URLSearchParams({ date: state.waysheetDate, cabinet: state.cabinet })}`);
         status.textContent = `Путевые загружены: ${r.items.length}.\nПоследняя успешная загрузка: ${localTime(r.fetchedAt)}`;
@@ -405,7 +428,7 @@
           h('div', { class: 'grow' }), h('span', { class: 'pill', text: `Всего путевых: ${r.items.length}` })));
         r.items.forEach((t, i) => list.append(tripCard(t, i + 1)));
       } catch (e) {
-        status.replaceChildren(msg(e.message));
+        fill(status, msg(e.message));
       } finally {
         btn.disabled = false;
         btn.textContent = '⟳ Обновить';
@@ -425,7 +448,7 @@
         t.srcOfficeName ? h('span', { class: 'pill', text: t.srcOfficeName }) : null,
         t.vehicleNumberPlate ? h('span', { class: 'pill', text: t.vehicleNumberPlate }) : null,
         t.cabinetName ? h('span', { class: 'pill', text: t.cabinetName }) : null,
-        t.isFineUnderConsideration ? h('span', { class: 'pill warn', text: 'штраф на рассмотрении' }) : null),
+        t.fineStatus ? h('span', { class: `pill ${STATUS_CLASS[t.fineStatus] || ''}`, text: `Штраф: ${t.fineStatusText.toLowerCase()}` }) : null),
       route ? h('div', { class: 'route-line', text: route }) : null,
       h('div', { class: 'box' }, h('div', { class: 'label', text: 'Открыл' }), h('div', { class: 'v', text: dt(t.openDt) })),
       h('div', { class: 'box' }, h('div', { class: 'label', text: 'Закрыл' }), h('div', { class: 'v', text: t.closeDt ? dt(t.closeDt) : '—' })),
@@ -437,6 +460,7 @@
         h('div', {}, 'Сумма путевого листа: ', h('b', { text: `${rub(t.price)} руб.` })),
         h('div', {}, 'Сумма возвратов: ', h('b', { text: `${rub(t.totalSumReturn || 0)} руб.` })),
         h('div', {}, 'Сумма штрафов: ', h('b', { text: `${rub(t.fine)} руб.` })),
+        t.fineParts.length > 1 || (t.fineParts[0] && t.fineParts[0].type !== 'Без вида') ? fineTypeLines(t.fineParts) : null,
         h('div', {}, 'Итог: ', h('b', { text: `${rub(t.total)} руб.` }))));
   }
 
@@ -453,7 +477,7 @@
     try { pct.value = (await api('/api/settings')).percent; } catch { pct.value = 20; }
 
     async function load() {
-      body.replaceChildren(h('div', { class: 'status', text: 'Загружаю…' }));
+      fill(body, h('div', { class: 'status', text: 'Загружаю…' }));
       try {
         const r = await api(`/api/summary?${new URLSearchParams({ from: state.period.from, to: state.period.to, percent: pct.value })}`);
         const t = r.totals;
@@ -465,29 +489,31 @@
             h('td', { class: 'num', text: rub(d.sum) }),
             h('td', { class: 'num', text: rub(d.retention) }),
             h('td', { class: 'num', text: d.fines ? rub(d.fines) : '—' }),
+            h('td', { class: 'num', text: d.finesPending ? rub(d.finesPending) : '—' }),
             h('td', { class: 'num', text: rub(d.payout) }));
-          const det = h('tr', { hidden: true }, h('td', { colspan: '6' },
+          const det = h('tr', { hidden: true }, h('td', { colspan: '7' },
             ...d.trips.map((x) => h('div', { class: 'small muted', text: `№ ${x.id} · ${x.vehicleNumberPlate || ''} · закрыт ${dt(x.closeDt)} · ${rub(x.price)}${x.fine ? ` · штраф ${rub(x.fine)}` : ''}` }))));
           tr.addEventListener('click', () => { det.hidden = !det.hidden; });
           tbody.append(tr, det);
         }
         const csvBtn = h('button', { class: 'btn', type: 'button', text: 'Скачать CSV', onclick: () => downloadCsv(r) });
-        body.replaceChildren(
+        fill(body, 
           ...r.warnings.map((w) => msg(w, 'warn')),
           h('div', { class: 'grid2' },
             h('div', { class: 'stat' }, h('div', { class: 'label', text: 'Сумма' }), h('div', { class: 'value', text: rub(t.sum) })),
             h('div', { class: 'stat' }, h('div', { class: 'label', text: 'К выплате' }), h('div', { class: 'value', text: rub(t.payout) }))),
           h('div', { class: 'table-wrap' }, h('table', {},
-            h('thead', {}, h('tr', {}, ...['Водитель', 'Рейсов', 'Сумма', 'Удержание', 'Штрафы', 'К выплате']
+            h('thead', {}, h('tr', {}, ...['Водитель', 'Рейсов', 'Сумма', 'Удержание', 'Штрафы', 'На рассм.', 'К выплате']
               .map((x, i) => h('th', { class: i ? 'num' : '', text: x })))),
             tbody,
             h('tfoot', {}, h('tr', {},
               h('td', { text: 'Итого' }), h('td', { class: 'num', text: t.tripsCount }), h('td', { class: 'num', text: rub(t.sum) }),
               h('td', { class: 'num', text: rub(t.retention) }), h('td', { class: 'num', text: rub(t.fines) }),
+              h('td', { class: 'num', text: rub(t.finesPending) }),
               h('td', { class: 'num', text: rub(t.payout) }))))),
           h('p', { class: 'small muted', text: `В пути (не вошли): ${r.inTransit.length}. Данные WB на ${localTime(r.fetchedAt)}.` }),
           csvBtn);
-      } catch (e) { body.replaceChildren(msg(e.message)); }
+      } catch (e) { fill(body, msg(e.message)); }
     }
     load();
   }
@@ -540,15 +566,15 @@
           try {
             await api('/api/cabinets', { method: 'POST', body: { name: name.value, value: key.value } });
             name.value = ''; key.value = '';
-            out.replaceChildren(msg('Кабинет добавлен.', 'ok'));
+            fill(out, msg('Кабинет добавлен.', 'ok'));
             draw();
-          } catch (e) { out.replaceChildren(msg(e.message)); }
+          } catch (e) { fill(out, msg(e.message)); }
         } })),
       out));
 
     async function draw() {
       const { cabinets } = await api('/api/cabinets');
-      list.replaceChildren(...(cabinets.length ? [] : [h('p', { class: 'muted', text: 'Кабинетов пока нет.' })]),
+      fill(list, ...(cabinets.length ? [] : [h('p', { class: 'muted', text: 'Кабинетов пока нет.' })]),
         ...cabinets.map((c) => {
           const newKey = h('input', { class: 'input', type: 'password', placeholder: 'Новый адрес с bearer=…', autocomplete: 'off' });
           const rawDate = h('input', { class: 'input', type: 'date', value: shift(today(), -1) });
@@ -563,9 +589,9 @@
                 h('button', { class: 'btn small light', type: 'button', text: 'Сохранить ключ', onclick: async () => {
                   try {
                     await api(`/api/cabinets/${c.id}`, { method: 'PUT', body: { value: newKey.value } });
-                    out.replaceChildren(msg('Ключ обновлён.', 'ok'));
+                    fill(out, msg('Ключ обновлён.', 'ok'));
                     draw();
-                  } catch (e) { out.replaceChildren(msg(e.message)); }
+                  } catch (e) { fill(out, msg(e.message)); }
                 } }),
                 h('button', { class: 'btn small danger', type: 'button', text: 'Удалить кабинет', onclick: async () => {
                   if (!confirm(`Удалить кабинет «${c.name}» и его ключ?`)) return;
@@ -579,7 +605,7 @@
                 } }))));
         }));
     }
-    try { await draw(); } catch (e) { out.replaceChildren(msg(e.message)); }
+    try { await draw(); } catch (e) { fill(out, msg(e.message)); }
   }
 
   async function settingsUsers(box) {
@@ -600,8 +626,8 @@
       try {
         const { drivers } = await api(`/api/drivers?${new URLSearchParams({ from: shift(today(), -30), to: today() })}`);
         dl.replaceChildren(...drivers.map((d) => h('option', { value: d.driverName, text: `${d.driverName}${d.driverId ? ` · ID ${d.driverId}` : ''} · рейсов ${d.trips}` })));
-        out.replaceChildren(msg(`Найдено водителей: ${drivers.length}. Начните вводить ФИО в поле «ФИО в WB».`, 'ok'));
-      } catch (e) { out.replaceChildren(msg(e.message)); }
+        fill(out, msg(`Найдено водителей: ${drivers.length}. Начните вводить ФИО в поле «ФИО в WB».`, 'ok'));
+      } catch (e) { fill(out, msg(e.message)); }
       loadDrivers.disabled = false;
     } });
 
@@ -625,15 +651,15 @@
             const body = Object.fromEntries(Object.entries(f).map(([k, el]) => [k, el.value]));
             await api('/api/users', { method: 'POST', body });
             Object.values(f).forEach((el) => { if (el.tagName === 'INPUT') el.value = ''; });
-            out.replaceChildren(msg('Сотрудник добавлен.', 'ok'));
+            fill(out, msg('Сотрудник добавлен.', 'ok'));
             draw();
-          } catch (e) { out.replaceChildren(msg(e.message)); }
+          } catch (e) { fill(out, msg(e.message)); }
         } })),
       out));
 
     async function draw() {
       const { users } = await api('/api/users');
-      list.replaceChildren(...users.map((u) => {
+      fill(list, ...users.map((u) => {
         const pw = h('input', { class: 'input', type: 'password', placeholder: 'Новый пароль', autocomplete: 'new-password' });
         const pc = h('input', { class: 'input', type: 'number', min: '0', max: '100', step: '0.01', placeholder: 'Общий', value: u.percent ?? '' });
         const dn = h('input', { class: 'input', list: 'wb-drivers', value: u.driverName || '', placeholder: 'Как в ФИО' });
@@ -655,9 +681,9 @@
                   const body = { driverName: dn.value, driverId: di.value, percent: pc.value };
                   if (pw.value) body.password = pw.value;
                   await api(`/api/users/${u.id}`, { method: 'PUT', body });
-                  out.replaceChildren(msg('Сохранено.', 'ok'));
+                  fill(out, msg('Сохранено.', 'ok'));
                   draw();
-                } catch (e) { out.replaceChildren(msg(e.message)); }
+                } catch (e) { fill(out, msg(e.message)); }
               } }),
               u.id === state.me.id ? null : h('button', { class: 'btn small danger', type: 'button', text: 'Удалить', onclick: async () => {
                 if (!confirm(`Удалить сотрудника «${u.name}»?`)) return;
@@ -666,13 +692,24 @@
               } }))));
       }));
     }
-    try { await draw(); } catch (e) { out.replaceChildren(msg(e.message)); }
+    try { await draw(); } catch (e) { fill(out, msg(e.message)); }
   }
 
   async function settingsCommon(box) {
     const out = h('div');
     const pct = h('input', { class: 'input', type: 'number', min: '0', max: '100', step: '0.01' });
-    try { pct.value = (await api('/api/settings')).percent; } catch { pct.value = 20; }
+    const pending = h('input', { type: 'checkbox' });
+    try {
+      const s = await api('/api/settings');
+      pct.value = s.percent;
+      pending.checked = s.deductPending;
+    } catch { pct.value = 20; pending.checked = true; }
+    pending.addEventListener('change', async () => {
+      try {
+        const s = await api('/api/settings', { method: 'POST', body: { deductPending: pending.checked } });
+        fill(out, msg(s.deductPending ? 'Штрафы на рассмотрении вычитаются.' : 'Штрафы на рассмотрении не вычитаются.', 'ok'));
+      } catch (e) { fill(out, msg(e.message)); pending.checked = !pending.checked; }
+    });
     box.append(h('div', { class: 'card' },
       h('div', { class: 'label', text: 'Общее удержание' }),
       h('p', { class: 'small muted', text: 'Процент от суммы путевых. У сотрудника можно задать свой процент.' }),
@@ -680,9 +717,11 @@
         h('button', { class: 'btn light', type: 'button', text: 'Сохранить', onclick: async () => {
           try {
             const s = await api('/api/settings', { method: 'POST', body: { percent: pct.value } });
-            out.replaceChildren(msg(`Удержание: ${s.percent}%.`, 'ok'));
-          } catch (e) { out.replaceChildren(msg(e.message)); }
+            fill(out, msg(`Удержание: ${s.percent}%.`, 'ok'));
+          } catch (e) { fill(out, msg(e.message)); }
         } })),
+      h('label', { class: 'row check' }, pending,
+        h('span', { text: 'Вычитать штрафы, которые WB ещё рассматривает' })),
       out));
   }
 
@@ -699,8 +738,8 @@
         try {
           await api('/api/password', { method: 'POST', body: { old: old.value, new: nw.value } });
           old.value = ''; nw.value = '';
-          out.replaceChildren(msg('Пароль изменён.', 'ok'));
-        } catch (e) { out.replaceChildren(msg(e.message)); }
+          fill(out, msg('Пароль изменён.', 'ok'));
+        } catch (e) { fill(out, msg(e.message)); }
       } }),
       out);
   }

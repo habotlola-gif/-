@@ -21,8 +21,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from core import (KeyStore, WaysheetCache, WbError, add_days, build_report, day_of,
-                  extract_token, key_info, parse_percent, trip_view, valid_date)
+from core import (NO_TYPE, KeyStore, WaysheetCache, WbError, add_days, build_report, day_of,
+                  extract_token, fines_summary, key_info, parse_percent, trip_view, valid_date)
 
 BASE_DIR = Path(__file__).resolve().parent
 PUBLIC_DIR = BASE_DIR / "public"
@@ -165,19 +165,37 @@ def ru_date(s):
     return f"{d}.{m}.{y}"
 
 
-def report_text(name, date_from, date_to, row, percent):
+def fine_type_line(kind, amount):
+    if kind == NO_TYPE:
+        return f"Штраф без указания вида всего {fmt_rub(amount)}"
+    if kind.casefold().startswith("штраф"):
+        return f"{kind} всего {fmt_rub(amount)}"
+    return f"Штраф «{kind}» всего {fmt_rub(amount)}"
+
+
+def report_text(name, date_from, date_to, row, percent, deduct_pending=True):
     pct = f"{percent:g}".replace(".", ",")
-    return "\n".join([
+    lines = [
         f"Зарплата партнера: {name}",
         f"Период: {ru_date(date_from)} - {ru_date(date_to)}",
         f"Путевых записей: {row['tripsCount']}",
         f"Сумма всех путевых: {fmt_rub(row['sum'])}",
         f"Минус удержание ({pct}%): {fmt_rub(row['retention'])}",
         f"После удержания: {fmt_rub(row['sum'] - row['retention'])}",
-        f"Сумма штрафов: {fmt_rub(row['fines'])}",
+    ]
+    by_type = row.get("finesByType") or []
+    # Разбивку по видам пишем, только когда WB прислал виды штрафов.
+    if any(f["type"] != NO_TYPE for f in by_type):
+        lines += [fine_type_line(f["type"], f["sum"]) for f in by_type]
+    lines.append(f"Сумма штрафов: {fmt_rub(row['fines'])}")
+    if row.get("finesPending"):
+        lines.append(f"В т.ч. на рассмотрении: {fmt_rub(row['finesPending'])}" if deduct_pending
+                     else f"Штрафы на рассмотрении (не вычтены): {fmt_rub(row['finesPending'])}")
+    lines += [
         f"Минус штрафы от путевых: {fmt_rub(row['fines'])}",
         f"Итого к выплате водителю: {fmt_rub(row['payout'])}",
-    ])
+    ]
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------- приложение
@@ -192,6 +210,10 @@ class App:
     def percent_for(self, user):
         p = user.get("percent") if user else None
         return p if p is not None else self.db.data["settings"]["percent"]
+
+    def deduct_pending(self):
+        """Вычитать ли штрафы, которые WB ещё рассматривает."""
+        return self.db.data["settings"].get("deductPending", True)
 
     def load_trips(self, date_from, date_to, cabinet_ids=None):
         """Путевые за период из WB (to + 1 день), по всем или выбранным кабинетам."""
@@ -218,15 +240,19 @@ class App:
         trips, fetched_at, warnings = self.load_trips(date_from, date_to)
         mine = [{**t, "driverId": "me", "driverName": user["name"]} for t in trips if user_matches(user, t)]
         percent = self.percent_for(user)
-        rep = build_report(mine, date_from, date_to, percent)
+        deduct = self.deduct_pending()
+        rep = build_report(mine, date_from, date_to, percent, deduct)
         row = rep["drivers"][0] if rep["drivers"] else {
-            "tripsCount": 0, "sum": 0, "retention": 0, "fines": 0, "payout": 0, "trips": []}
+            "tripsCount": 0, "sum": 0, "retention": 0, "fines": 0, "finesPending": 0, "payout": 0,
+            "finesByType": [], "finesByStatus": [], "trips": []}
         return {
             "employee": public_user(user), "from": date_from, "to": date_to, "percent": percent,
             "tripsCount": row["tripsCount"], "sum": row["sum"], "retention": row["retention"],
             "afterRetention": row["sum"] - row["retention"], "fines": row["fines"], "payout": row["payout"],
+            "finesPending": row["finesPending"], "finesByType": row["finesByType"],
+            "finesByStatus": row["finesByStatus"], "deductPending": deduct,
             "trips": row["trips"], "inTransit": len(rep["inTransit"]),
-            "text": report_text(user["name"], date_from, date_to, row, percent),
+            "text": report_text(user["name"], date_from, date_to, row, percent, deduct),
             "fetchedAt": fetched_at, "warnings": warnings,
         }
 
@@ -563,17 +589,23 @@ def make_handler(app):
         # ======== настройки
         def api_settings(self, q, _):
             self.need_user()
-            return db.data["settings"]
+            return {"percent": db.data["settings"]["percent"], "deductPending": app.deduct_pending()}
 
         def api_settings_save(self, q, _):
             self.need_admin()
-            p = parse_percent(self.body().get("percent"))
-            if p is None:
-                raise bad("BAD_PERCENT", "Процент должен быть от 0 до 100.")
+            b = self.body()
+            changes = {}
+            if "percent" in b:
+                p = parse_percent(b.get("percent"))
+                if p is None:
+                    raise bad("BAD_PERCENT", "Процент должен быть от 0 до 100.")
+                changes["percent"] = p
+            if "deductPending" in b:
+                changes["deductPending"] = bool(b["deductPending"])
             with db.lock:
-                db.data["settings"]["percent"] = p
+                db.data["settings"].update(changes)
                 db.save()
-            return db.data["settings"]
+            return self.api_settings(q, None)
 
         # ======== данные
         def target_user(self, q):
@@ -605,10 +637,13 @@ def make_handler(app):
                 if not day or not (date_from <= day <= date_to):
                     continue
                 card = waysheet_card(t)
-                if card["fine"] or card["isFine"] or card["isFineUnderConsideration"]:
+                if card["fineStatus"]:
                     rows.append(card)
             rows.sort(key=lambda r: str(r["closeDt"] or r["openDt"]))
-            return {"items": rows, "total": sum(r["fine"] for r in rows),
+            # Сводка по всем штрафам периода, включая незакрытые путевые.
+            summary = fines_summary(rows, deduct_pending=True)
+            return {"items": rows, "total": summary["fines"], "byType": summary["finesByType"],
+                    "byStatus": summary["finesByStatus"], "deductPending": app.deduct_pending(),
                     "fetchedAt": fetched_at, "warnings": warnings}
 
         def api_waysheets(self, q, _):
@@ -638,7 +673,7 @@ def make_handler(app):
             if percent is None:
                 raise bad("BAD_PERCENT", "Процент должен быть от 0 до 100.")
             trips, fetched_at, warnings = app.load_trips(date_from, date_to)
-            rep = build_report(trips, date_from, date_to, percent)
+            rep = build_report(trips, date_from, date_to, percent, app.deduct_pending())
             return {**rep, "fetchedAt": fetched_at, "warnings": warnings}
 
         def api_drivers(self, q, _):

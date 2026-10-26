@@ -117,6 +117,80 @@ def parse_route(name):
     return [p for p in points if p["name"] or p["id"]]
 
 
+# ---------------------------------------------------------------- штрафы
+
+FINE_PENDING = "pending"      # на рассмотрении
+FINE_APPROVED = "approved"    # подтверждён
+FINE_UNCONFIRMED = "unconfirmed"  # не подтверждён
+FINE_CHARGED = "charged"      # начислен, без отметки о подтверждении
+FINE_STATUS_TEXT = {
+    FINE_PENDING: "На рассмотрении",
+    FINE_APPROVED: "Подтверждён",
+    FINE_UNCONFIRMED: "Не подтверждён",
+    FINE_CHARGED: "Начислен",
+}
+NO_TYPE = "Без вида"
+
+_SUM_KEYS = ("sum", "fineSum", "amount", "value", "price", "total", "totalSum")
+_NAME_KEYS = ("fineTypeName", "typeName", "name", "reasonName", "reason", "title", "description", "type", "comment")
+_SCALAR_TYPE_KEYS = ("fineTypeName", "fineType", "fineReason", "fineName", "fineDescription")
+
+
+def fine_status(t):
+    """Статус штрафа по признакам WB; None — штрафа нет."""
+    if not kopecks(t.get("fineSum")) and not t.get("isFine") and not t.get("isFineUnderConsideration"):
+        return None
+    if t.get("isFineUnderConsideration"):
+        return FINE_PENDING
+    if t.get("isApproved") is True:
+        return FINE_APPROVED
+    if t.get("isApproved") is False:
+        return FINE_UNCONFIRMED
+    return FINE_CHARGED
+
+
+def _first(d, keys):
+    for k in keys:
+        v = d.get(k)
+        if v not in (None, "") and not isinstance(v, (list, dict, bool)):
+            return v
+    return None
+
+
+def fine_parts(t):
+    """Штраф путевого по видам: [{"type", "sum"}].
+
+    Если WB присылает в путевом список штрафов (поле со словом fine/penalty,
+    элементы с названием и суммой) или название вида строкой — берём вид оттуда.
+    Иначе весь fineSum идёт одной строкой «Без вида».
+    """
+    total = kopecks(t.get("fineSum"))
+    parts = []
+    for key, value in t.items():
+        low = key.lower()
+        if ("fine" not in low and "penalt" not in low) or not isinstance(value, list):
+            continue
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            amount = _first(item, _SUM_KEYS)
+            if amount is None:
+                continue
+            name = _first(item, _NAME_KEYS)
+            parts.append({"type": str(name).strip() if name not in (None, "") else NO_TYPE, "sum": kopecks(amount)})
+    listed = sum(p["sum"] for p in parts)
+    # Главная сумма — fineSum: список берём, только если он в неё укладывается,
+    # остаток идёт строкой «Без вида».
+    if parts and not (total and listed > total):
+        if total > listed:
+            parts.append({"type": NO_TYPE, "sum": total - listed})
+        return [p for p in parts if p["sum"]]
+    if not total:
+        return []
+    name = _first(t, _SCALAR_TYPE_KEYS)
+    return [{"type": str(name).strip() if name not in (None, "") else NO_TYPE, "sum": total}]
+
+
 def trip_view(t):
     ret = t.get("totalSumReturn")
     return {
@@ -125,7 +199,10 @@ def trip_view(t):
         "closeDt": t.get("closeDt"),
         "vehicleNumberPlate": t.get("vehicleNumberPlate") or "",
         "price": kopecks(t.get("totalPrice")),
-        "fine": kopecks(t.get("fineSum")),
+        "fine": sum(p["sum"] for p in fine_parts(t)),
+        "fineParts": fine_parts(t),
+        "fineStatus": fine_status(t),
+        "fineStatusText": FINE_STATUS_TEXT.get(fine_status(t)),
         "isFine": bool(t.get("isFine")),
         "isFineUnderConsideration": bool(t.get("isFineUnderConsideration")),
         "isApproved": t.get("isApproved"),
@@ -141,7 +218,32 @@ def trip_view(t):
     }
 
 
-def build_report(tasks, date_from, date_to, percent):
+def fines_summary(trips, deduct_pending=True):
+    """Штрафы водителя: сколько вычесть, по видам и по статусам."""
+    by_type, by_status = {}, {}
+    deducted = pending = 0
+    for x in trips:
+        if not x["fine"]:
+            continue
+        status = x["fineStatus"] or FINE_CHARGED
+        by_status[status] = by_status.get(status, 0) + x["fine"]
+        if status == FINE_PENDING:
+            pending += x["fine"]
+            if not deduct_pending:
+                continue
+        deducted += x["fine"]
+        for p in x["fineParts"]:
+            by_type[p["type"]] = by_type.get(p["type"], 0) + p["sum"]
+    return {
+        "fines": deducted,
+        "finesPending": pending,
+        "finesByType": [{"type": k, "sum": v} for k, v in sorted(by_type.items(), key=lambda kv: (kv[0] == NO_TYPE, kv[0]))],
+        "finesByStatus": [{"status": k, "text": FINE_STATUS_TEXT[k], "sum": v}
+                          for k, v in by_status.items()],
+    }
+
+
+def build_report(tasks, date_from, date_to, percent, deduct_pending=True):
     drivers = {}
     in_transit = []
     skipped_outside = skipped_deleted = 0
@@ -174,12 +276,12 @@ def build_report(tasks, date_from, date_to, percent):
     for d in drivers.values():
         d["trips"].sort(key=lambda x: str(x["closeDt"]))
         total = sum(x["price"] for x in d["trips"])
-        fines = sum(x["fine"] for x in d["trips"])
+        fs = fines_summary(d["trips"], deduct_pending)
         hold = percent_of(total, percent)  # округление по каждому водителю
         rows.append({
             "driverId": d["driverId"], "driverName": d["driverName"], "plates": d["plates"],
-            "tripsCount": len(d["trips"]), "sum": total, "retention": hold, "fines": fines,
-            "payout": total - hold - fines,
+            "tripsCount": len(d["trips"]), "sum": total, "retention": hold, **fs,
+            "payout": total - hold - fs["fines"],
             "hasFineUnderConsideration": any(x["isFineUnderConsideration"] for x in d["trips"]),
             "trips": d["trips"],
         })
@@ -187,9 +289,10 @@ def build_report(tasks, date_from, date_to, percent):
     in_transit.sort(key=lambda x: str(x["openDt"]))
 
     # Итог — сумма уже округлённых значений по водителям.
-    totals = {k: sum(r[k] for r in rows) for k in ("tripsCount", "sum", "retention", "fines", "payout")}
+    totals = {k: sum(r[k] for r in rows)
+              for k in ("tripsCount", "sum", "retention", "fines", "finesPending", "payout")}
     return {
-        "from": date_from, "to": date_to, "percent": percent,
+        "from": date_from, "to": date_to, "percent": percent, "deductPending": deduct_pending,
         "drivers": rows, "totals": totals, "inTransit": in_transit,
         "stats": {"received": len(tasks) if isinstance(tasks, list) else 0,
                   "skippedOutside": skipped_outside, "skippedDeleted": skipped_deleted},
