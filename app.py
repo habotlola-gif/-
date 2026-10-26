@@ -94,16 +94,23 @@ class Db:
     def cabinet(self, cid):
         return next((c for c in self.cabinets() if c["id"] == cid), None)
 
-    def key_store(self, cid):
-        if cid not in self.keys:
-            self.keys[cid] = KeyStore(self.dir, filename=f"wb-key-{cid}.enc")
-        return self.keys[cid]
+    # kind: "main" — ключ из адреса ol.wildberries.ru (путевые);
+    #       "svc"  — ключ остатков и удержаний, если WB требует для них другой.
+    def key_store(self, cid, kind="main"):
+        if (cid, kind) not in self.keys:
+            name = f"wb-key-{cid}.enc" if kind == "main" else f"wb-svc-{cid}.enc"
+            self.keys[(cid, kind)] = KeyStore(self.dir, filename=name)
+        return self.keys[(cid, kind)]
 
-    def token(self, cid):
+    def token(self, cid, kind="main"):
         try:
-            return self.key_store(cid).load()
+            return self.key_store(cid, kind).load()
         except Exception:
             return None
+
+    def service_token(self, cid):
+        """Ключ для остатков и удержаний: отдельный, если задан, иначе основной."""
+        return self.token(cid, "svc") or self.token(cid)
 
     # --- сессии
     def create_session(self, uid):
@@ -301,11 +308,19 @@ class App:
             st = {**st, "tried": time.time()}
             self.remains_status[cid] = st
             try:
-                token = self.db.token(cid)
+                token = self.db.service_token(cid)
                 if not token:
                     raise WbError("NO_KEY", f"{cab['name']}: ключ не задан.")
                 sup = self.supplier_ids(cab)
-                items = fetch_remains(token, sup, self.post)
+                try:
+                    items = fetch_remains(token, sup, self.post)
+                except WbError as e:
+                    if e.code == "KEY_EXPIRED":
+                        own = "Ключ остатков и удержаний" if self.db.token(cid, "svc") else "Основной ключ"
+                        raise WbError(e.code, f"{cab['name']}: {own} не подошёл для остатков. Вставьте ключ "
+                                              "из запроса by-routecar в Настройки → Кабинеты → «Ключ остатков "
+                                              f"и удержаний». {e}", e.status)
+                    raise
                 self.save_remains(items, "автозагрузка WB", cab["name"], sup)
                 self.remains_status[cid] = {**st, "ok": time.time(), "error": None, "count": len(items)}
             except WbError as e:
@@ -643,6 +658,10 @@ def make_handler(app):
             if admin:
                 info["supplierIds"] = c.get("supplierIds") or []
                 try:
+                    info["key2"] = key_info(db.key_store(c["id"], "svc").load())
+                except Exception:
+                    info["key2"] = {"configured": False, "broken": True}
+                try:
                     info["key"] = key_info(db.key_store(c["id"]).load())
                 except Exception:
                     info["key"] = {"configured": False, "broken": True}
@@ -652,19 +671,23 @@ def make_handler(app):
             u = self.need_user()
             return {"cabinets": [self.cabinet_info(c, u["role"] == "admin") for c in db.cabinets()]}
 
-        def save_key(self, cid, value):
-            token = extract_token(value)
+        def save_key(self, cid, value, kind="main"):
+            token = extract_token(value, any_format=kind == "svc")
             if not token:
+                if kind == "svc":
+                    raise bad("BAD_KEY", "Не нашёл ключ. Вставьте значение заголовка Authorization из запроса "
+                                         "остатков (by-routecar) — с «Bearer» или без.")
                 raise bad("BAD_KEY", "Не нашёл ключ. Вставьте адрес страницы ol.wildberries.ru целиком "
                                      "(с «bearer=») или сам ключ.")
             if key_info(token)["expired"]:
                 raise bad("KEY_EXPIRED", "Этот ключ уже истёк — возьмите свежий. Если ключ точно свежий, "
                                          "проверьте дату и время на компьютере.")
             try:
-                db.key_store(cid).save(token)
+                db.key_store(cid, kind).save(token)
             except RuntimeError as e:
                 raise bad("NO_CRYPTO", str(e), 500)
             app.cache.clear(cid)
+            app.remains_status.pop(cid, None)
 
         @staticmethod
         def parse_suppliers(raw):
@@ -683,6 +706,8 @@ def make_handler(app):
             cid = db.new_id()
             sup = self.parse_suppliers(b.get("supplierIds"))
             self.save_key(cid, b.get("value"))
+            if b.get("value2"):
+                self.save_key(cid, b["value2"], "svc")
             with db.lock:
                 db.cabinets().append({"id": cid, "name": name, "supplierIds": sup})
                 db.save()
@@ -696,6 +721,11 @@ def make_handler(app):
             b = self.body()
             if b.get("value"):
                 self.save_key(cid, b["value"])
+            if b.get("value2"):
+                self.save_key(cid, b["value2"], "svc")
+            if b.get("clearValue2"):
+                db.key_store(cid, "svc").remove()
+                app.remains_status.pop(cid, None)
             if "supplierIds" in b:
                 sup = self.parse_suppliers(b["supplierIds"])
                 with db.lock:
@@ -711,6 +741,7 @@ def make_handler(app):
         def api_cabinet_delete(self, q, cid):
             self.need_admin()
             db.key_store(cid).remove()
+            db.key_store(cid, "svc").remove()
             app.cache.clear(cid)
             with db.lock:
                 db.data["cabinets"] = [c for c in db.cabinets() if c["id"] != cid]

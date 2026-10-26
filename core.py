@@ -304,8 +304,14 @@ def build_report(tasks, date_from, date_to, percent, deduct_pending=True):
 JWT_RE = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$")
 
 
-def extract_token(text):
-    """Ключ из адреса страницы ol.wildberries.ru (bearer=...), строки 'Bearer ...' или сам ключ."""
+ANY_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~+/=-]{20,}$")
+
+
+def extract_token(text, any_format=False):
+    """Ключ из адреса страницы ol.wildberries.ru (bearer=...), строки 'Bearer ...' или сам ключ.
+
+    any_format — принять и ключ не в виде JWT (у других сервисов WB он может быть другим).
+    """
     if not isinstance(text, str):
         return None
     s = text.strip()
@@ -314,7 +320,9 @@ def extract_token(text):
         from urllib.parse import unquote
         s = unquote(m.group(1))
     s = re.sub(r"^bearer\s+", "", s, flags=re.I).strip()
-    return s if JWT_RE.match(s) else None
+    if JWT_RE.match(s):
+        return s
+    return s if any_format and ANY_TOKEN_RE.match(s) else None
 
 
 def jwt_payload(token):

@@ -685,6 +685,7 @@
   function keyText(k) {
     if (!k || !k.configured) return k && k.broken ? 'ключ не читается — вставьте заново' : 'ключ не задан';
     if (k.expired) return 'ключ устарел — обновите';
+    if (!k.expiresAt) return 'ключ задан (срок неизвестен)';
     return `ключ до ${new Date(k.expiresAt).toLocaleDateString('ru-RU')} (${k.daysLeft} дн.)`;
   }
 
@@ -718,6 +719,9 @@
         ...cabinets.map((c) => {
           const newKey = h('input', { class: 'input', type: 'password', placeholder: 'Новый адрес с bearer=…', autocomplete: 'off' });
           const rawDate = h('input', { class: 'input', type: 'date', value: shift(today(), -1) });
+          const key2 = h('input', { class: 'input', type: 'password', placeholder: 'Bearer eyJ…', autocomplete: 'off', spellcheck: 'false' });
+          const k2 = c.key2 || {};
+          const k2text = k2.configured ? keyText(k2) : 'не задан — используется основной ключ';
           const supEdit = h('input', { class: 'input grow', inputmode: 'numeric', value: c.supplierIds.join(', '), placeholder: 'ID поставщика' });
           const bad = !c.key.configured || c.key.expired;
           return h('div', { class: 'list-item' },
@@ -725,6 +729,25 @@
               h('span', { class: 't', text: c.name }),
               h('span', { class: `small ${bad ? 'pill warn' : 'muted'}`, text: keyText(c.key) })),
             h('div', { class: 'small muted', text: `ID поставщика: ${c.supplierIds.length ? c.supplierIds.join(', ') : 'определится сам по путевым'}` }),
+            h('div', { class: `small ${k2.configured && k2.expired ? 'pill warn' : 'muted'}`, text: `Ключ остатков и удержаний: ${k2text}` }),
+            h('details', {}, h('summary', { text: 'Ключ остатков и удержаний' }),
+              h('p', { class: 'small muted', text: 'Нужен, если WB для остатков и удержаний требует другой ключ. Где взять: '
+                + 'на ol.wildberries.ru откройте «Остатки», F12 → Network, обновите страницу, щёлкните запрос by-routecar → '
+                + 'Headers → Request Headers → строка Authorization → правой кнопкой «Copy Value» и вставьте сюда. '
+                + 'Никому этот ключ не пересылайте.' }),
+              h('div', { class: 'field' }, key2),
+              h('div', { class: 'row' },
+                h('button', { class: 'btn small light', type: 'button', text: 'Сохранить ключ', onclick: async () => {
+                  try {
+                    await api(`/api/cabinets/${c.id}`, { method: 'PUT', body: { value2: key2.value } });
+                    fill(out, msg('Ключ остатков и удержаний сохранён.', 'ok'));
+                    draw();
+                  } catch (e) { fill(out, msg(e.message)); }
+                } }),
+                k2.configured ? h('button', { class: 'btn small danger', type: 'button', text: 'Убрать', onclick: async () => {
+                  await api(`/api/cabinets/${c.id}`, { method: 'PUT', body: { clearValue2: true } });
+                  draw();
+                } }) : null)),
             h('details', {}, h('summary', { text: 'Обновить ключ / ID поставщика / удалить' }),
               h('div', { class: 'field' }, newKey),
               h('div', { class: 'row' }, supEdit,

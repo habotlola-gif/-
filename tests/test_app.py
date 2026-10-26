@@ -476,6 +476,24 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(posts[-1][1]["data"]["supplier_ids"], [888])
         self.assertEqual(self.app.db.cabinet(cid)["supplierIds"], ["888"])
 
+        # Отдельный ключ остатков и удержаний — в запросах остатков идёт он, путевые — с основным.
+        self.assertEqual(self.req(admin, f"/api/cabinets/{cid}", "PUT", {"value2": "короткий"})[0], 400)
+        svc = "opaque-service-token-1234567890"
+        status, info = self.req(admin, f"/api/cabinets/{cid}", "PUT", {"value2": f"Bearer {svc}"})
+        self.assertEqual((status, info["key2"]["configured"]), (200, True))
+        self.assertNotIn(svc, json.dumps(info))
+        self.app.refresh_remains(cid, force=True)
+        self.assertEqual(posts[-1][2], svc)
+        self.assertEqual(self.app.db.token(cid), jwt)
+
+        def denied(url, body, token):
+            raise core.WbError("KEY_EXPIRED", "Ключ устарел, обновите. (WB ответил 401)", 401)
+        self.app.post = denied
+        self.app.remains_status[cid]["tried"] -= 120
+        _, r = self.req(admin, "/api/remains/refresh", "POST", {})
+        self.assertIn("Ключ остатков и удержаний", r["auto"][0]["error"])
+        self.assertEqual(self.req(admin, f"/api/cabinets/{cid}", "PUT", {"clearValue2": True})[1]["key2"]["configured"], False)
+
         self.assertEqual(self.req(admin, "/api/settings", "POST", {"remainsMinutes": 2})[0], 400)
         self.assertEqual(self.req(admin, "/api/settings", "POST", {"remainsMinutes": 15})[1]["remainsMinutes"], 15)
 
