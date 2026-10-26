@@ -4,6 +4,9 @@
 #   sudo bash deploy/install.sh                 # адрес вида https://1-2-3-4.sslip.io
 #   sudo bash deploy/install.sh zarplata.ru     # свой домен (A-запись должна указывать на сервер)
 #
+# Обновление с компьютера (PowerShell, в папке с новым архивом):
+#   scp logistica-wb.zip root@IP: ; ssh root@IP "unzip -o logistica-wb.zip && bash logistica-wb/deploy/install.sh ДОМЕН"
+#
 # Повторный запуск обновляет программу; данные, ключи и пароли сохраняются.
 set -euo pipefail
 
@@ -97,8 +100,16 @@ EOF
 
 # HTTPS: сертификат от Let's Encrypt, а если он недоступен — от ZeroSSL (Caddy переключается сам,
 # для ZeroSSL нужен e-mail). Если недоступны оба — сайт работает по http.
+# HTTP_ONLY=1 в $ENV_FILE — сайт остаётся на http и при обновлениях (если сертификат не выдают).
 reachable() { [[ "$(curl -s -m 15 -o /dev/null -w '%{http_code}' "$1" || true)" != "000" ]]; }
-if reachable https://acme-v02.api.letsencrypt.org/directory || reachable https://acme.zerossl.com/v2/DV90; then
+if grep -q '^HTTP_ONLY=1' "$ENV_FILE"; then
+  HTTPS_OK=no
+elif reachable https://acme-v02.api.letsencrypt.org/directory || reachable https://acme.zerossl.com/v2/DV90; then
+  HTTPS_OK=yes
+else
+  HTTPS_OK=no
+fi
+if [[ $HTTPS_OK == yes ]]; then
   SCHEME=https
   cat > /etc/caddy/Caddyfile <<EOF
 {
@@ -113,7 +124,8 @@ EOF
   sed -i 's/^#COOKIE_SECURE=.*/COOKIE_SECURE=1/' "$ENV_FILE"
 else
   SCHEME=http
-  echo "    !!! Серверы сертификатов недоступны с этого сервера — сайт будет на http (без замка в браузере)."
+  grep -q '^HTTP_ONLY=1' "$ENV_FILE" || echo "HTTP_ONLY=1" >> "$ENV_FILE"
+  echo "    Сайт работает на http (без замка в браузере). Чтобы снова пробовать https: убрать HTTP_ONLY из $ENV_FILE."
   cat > /etc/caddy/Caddyfile <<EOF
 :80 {
 	encode gzip
