@@ -154,7 +154,18 @@ class Db:
 
 
 def public_user(u):
-    return {k: u.get(k) for k in ("id", "login", "name", "role", "driverName", "driverId", "percent")}
+    return {k: u.get(k) for k in ("id", "login", "name", "role", "driverName", "driverId", "percent", "cabinetId")}
+
+
+ROLES = ("admin", "owner", "driver")  # администратор, ИП (свой кабинет), водитель (только себя)
+
+
+def remains_of_cabinet(items, cab):
+    """Остатки одного кабинета: по ID поставщика, а если его нет — по названию ИП."""
+    ids = {str(x) for x in cab.get("supplierIds") or []}
+    name = norm_name(cab["name"])
+    return [i for i in items if any((c.get("id") and str(c["id"]) in ids) or norm_name(c.get("name")) == name
+                                    for c in i.get("carrierList") or [])]
 
 
 def user_matches(u, t):
@@ -405,11 +416,13 @@ class App:
                 os.replace(tmp, self.index_file())
 
     # --- удержания WB
-    def load_holds(self, date_from, date_to):
-        """Удержания WB по всем кабинетам за период (по дате удержания), с водителем по номеру путевого."""
+    def load_holds(self, date_from, date_to, cabinet_ids=None):
+        """Удержания WB по кабинетам за период (по дате удержания), с водителем по номеру путевого."""
         items, fetched, warnings = [], [], []
         for cab in self.db.cabinets():
             cid = cab["id"]
+            if cabinet_ids is not None and cid not in cabinet_ids:
+                continue
             token = self.db.service_token(cid)
             try:
                 if not token:
@@ -445,12 +458,12 @@ class App:
         items.sort(key=lambda i: str(i["createdAt"]), reverse=True)
         return items, (max(fetched) if fetched else None), warnings
 
-    def holds_for(self, user, date_from, date_to):
-        items, at, warnings = self.load_holds(date_from, date_to)
+    def holds_for(self, user, date_from, date_to, cabinet_ids=None):
+        items, at, warnings = self.load_holds(date_from, date_to, cabinet_ids)
         mine = [i for i in items if i["driverName"] and user_matches(user, i)]
         return mine, at, warnings
 
-    def apply_holds(self, rep, date_from, date_to, deduct_holds, warnings):
+    def apply_holds(self, rep, date_from, date_to, deduct_holds, warnings, cabinet_ids=None):
         """Удержания WB в ведомость: по водителю, вычитаются из прибыли, если deduct_holds.
 
         Водитель с удержаниями, но без закрытых путевых в периоде, добавляется строкой без рейсов.
@@ -460,7 +473,7 @@ class App:
         if not self.db.cabinets():
             return {"deductHolds": deduct_holds, "holdsUnmatched": {"count": 0, "sum": 0}}
         try:
-            items, _, hw = self.load_holds(date_from, date_to)
+            items, _, hw = self.load_holds(date_from, date_to, cabinet_ids)
             warnings += hw
         except WbError as e:
             warnings.append(f"Удержания WB не загрузились: {e}")
@@ -496,9 +509,9 @@ class App:
         return {"drivers": rows, "totals": totals, "deductHolds": deduct_holds,
                 "holdsUnmatched": {"count": len(unmatched), "sum": sum(h["amount"] for h in unmatched)}}
 
-    def employee_report(self, user, date_from, date_to, deduct_holds=True):
+    def employee_report(self, user, date_from, date_to, deduct_holds=True, cabinet_ids=None):
         """Отчёт водителя. deduct_holds — вычитать удержания WB (переключатель на странице отчёта)."""
-        trips, fetched_at, warnings = self.load_trips(date_from, date_to)
+        trips, fetched_at, warnings = self.load_trips(date_from, date_to, cabinet_ids)
         mine = [{**t, "driverId": "me", "driverName": user["name"]} for t in trips if user_matches(user, t)]
         percent = self.percent_for(user)
         deduct = self.deduct_pending()
@@ -506,7 +519,7 @@ class App:
         holds, holds_by_type, holds_error = [], [], None
         if self.db.cabinets():
             try:
-                holds, _, hw = self.holds_for(user, date_from, date_to)
+                holds, _, hw = self.holds_for(user, date_from, date_to, cabinet_ids)
                 warnings = warnings + hw
             except WbError as e:
                 holds_error = str(e)
@@ -636,6 +649,31 @@ def make_handler(app):
                 raise bad("FORBIDDEN", "Доступно только администратору.", 403)
             return u
 
+        def need_manager(self):
+            """Администратор или ИП — те, кто видит всех водителей (ИП — только своего кабинета)."""
+            u = self.need_user()
+            if u["role"] not in ("admin", "owner"):
+                raise bad("FORBIDDEN", "Нет доступа.", 403)
+            self.scope(u)
+            return u
+
+        def scope(self, u):
+            """Кабинеты, доступные пользователю; None — все."""
+            if u["role"] != "owner":
+                return None
+            if not db.cabinet(u.get("cabinetId")):
+                raise bad("FORBIDDEN", "ИП не привязан к кабинету. Обратитесь к администратору.", 403)
+            return [u["cabinetId"]]
+
+        def client_ip(self):
+            if os.environ.get("TRUST_PROXY") and self.headers.get("X-Forwarded-For"):
+                return self.headers["X-Forwarded-For"].split(",")[0].strip()
+            return self.client_address[0]
+
+        def cookie_attrs(self):
+            secure = os.environ.get("COOKIE_SECURE") or self.headers.get("X-Forwarded-Proto") == "https"
+            return "Path=/; HttpOnly; SameSite=Strict" + ("; Secure" if secure else "")
+
         def same_origin(self):
             origin = self.headers.get("Origin")
             return not origin or urlparse(origin).netloc == self.headers.get("Host")
@@ -675,12 +713,17 @@ def make_handler(app):
         # ======== вход
         def api_me(self, q, _):
             u = self.current_user()
-            return {"user": public_user(u) if u else None, "needsSetup": not db.users()}
+            return {"user": public_user(u) if u else None, "needsSetup": not db.users(),
+                    "setupNeedsCode": bool(os.environ.get("SETUP_CODE")) and not db.users()}
 
         def api_setup(self, q, _):
             if db.users():
                 raise bad("FORBIDDEN", "Администратор уже создан.", 403)
             b = self.body()
+            # На сервере в интернете первого администратора создаёт только тот, кто знает код из установки.
+            code = os.environ.get("SETUP_CODE")
+            if code and not hmac.compare_digest(str(b.get("code", "")).strip().encode(), code.encode()):
+                raise bad("BAD_CODE", "Неверный код установки. Он напечатан в конце установки и лежит в /etc/logistica-wb.env.", 403)
             user = self.make_user(b, role="admin")
             with db.lock:
                 db.users().append(user)
@@ -688,7 +731,7 @@ def make_handler(app):
             return self.start_session(user)
 
         def api_login(self, q, _):
-            ip = self.client_address[0]
+            ip = self.client_ip()
             now = time.time()
             fails = [t for t in app.login_failures.get(ip, []) if now - t < 600]
             if len(fails) >= 10:
@@ -704,12 +747,12 @@ def make_handler(app):
         def start_session(self, u):
             token = db.create_session(u["id"])
             self.send(200, {"user": public_user(u)}, {
-                "Set-Cookie": f"{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_TTL}"})
+                "Set-Cookie": f"{COOKIE}={token}; {self.cookie_attrs()}; Max-Age={SESSION_TTL}"})
 
         def api_logout(self, q, _):
             if self.cookie():
                 db.drop_session(self.cookie())
-            self.send(200, {"ok": True}, {"Set-Cookie": f"{COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"})
+            self.send(200, {"ok": True}, {"Set-Cookie": f"{COOKIE}=; {self.cookie_attrs()}; Max-Age=0"})
 
         def api_password(self, q, _):
             u = self.need_user()
@@ -743,10 +786,14 @@ def make_handler(app):
             if not existing or "login" in b:
                 u["login"] = login
             if role or "role" in b or not existing:
-                r = role or b.get("role") or "driver"
-                if r not in ("admin", "driver"):
+                r = role or b.get("role") or "owner"
+                if r not in ROLES:
                     raise bad("BAD_USER", "Неверная роль.")
                 u["role"] = r
+            if "cabinetId" in b or not existing:
+                u["cabinetId"] = str(b.get("cabinetId") or "") or None
+            if u["role"] == "owner" and not db.cabinet(u.get("cabinetId")):
+                raise bad("BAD_USER", "Выберите кабинет ИП.")
             for f in ("driverName", "driverId"):
                 if f in b or not existing:
                     v = str(b.get(f) or "").strip()
@@ -785,7 +832,7 @@ def make_handler(app):
             if not u:
                 raise bad("NOT_FOUND", "Сотрудник не найден.", 404)
             b = self.body()
-            if u is me and b.get("role") == "driver":
+            if u is me and b.get("role") not in (None, "admin"):
                 raise bad("BAD_USER", "Нельзя снять права администратора с себя.")
             with db.lock:
                 self.make_user(b, existing=u)
@@ -822,7 +869,9 @@ def make_handler(app):
 
         def api_cabinets(self, q, _):
             u = self.need_user()
-            return {"cabinets": [self.cabinet_info(c, u["role"] == "admin") for c in db.cabinets()]}
+            allowed = self.scope(u)
+            return {"cabinets": [self.cabinet_info(c, u["role"] == "admin") for c in db.cabinets()
+                                 if allowed is None or c["id"] in allowed]}
 
         def save_key(self, cid, value, kind="main"):
             token = extract_token(value, any_format=kind == "svc")
@@ -899,6 +948,9 @@ def make_handler(app):
             app.cache.clear(cid)
             with db.lock:
                 db.data["cabinets"] = [c for c in db.cabinets() if c["id"] != cid]
+                for u in db.users():  # ИП удалённого кабинета больше ничего не видит
+                    if u.get("cabinetId") == cid:
+                        u["cabinetId"] = None
                 db.save()
             return {"ok": True}
 
@@ -937,8 +989,8 @@ def make_handler(app):
             u = self.need_user()
             driver = (q.get("driver") or [""])[0].strip()
             if driver:
-                # Администратор смотрит отчёт любого водителя из WB, даже не заведённого в сотрудники.
-                if u["role"] != "admin":
+                # Администратор и ИП смотрят отчёт любого водителя из WB (ИП — своего кабинета).
+                if u["role"] not in ("admin", "owner"):
                     raise bad("FORBIDDEN", "Можно смотреть только свои данные.", 403)
                 did = (q.get("driverId") or [""])[0].strip() or None
                 return {"id": None, "name": driver, "driverName": driver, "driverId": did,
@@ -953,19 +1005,20 @@ def make_handler(app):
             return u
 
         def api_report(self, q, _):
+            me = self.need_user()
             user = self.target_user(q)
             date_from, date_to = self.period(q)
             deduct_holds = (q.get("holds") or ["1"])[0] != "0"
-            return app.employee_report(user, date_from, date_to, deduct_holds)
+            return app.employee_report(user, date_from, date_to, deduct_holds, self.scope(me))
 
         def api_fines(self, q, _):
             """Удержания WB: путевые со штрафами за период."""
             u = self.need_user()
             date_from, date_to = self.period(q)
-            trips, fetched_at, warnings = app.load_trips(date_from, date_to)
+            trips, fetched_at, warnings = app.load_trips(date_from, date_to, self.scope(u))
             rows = []
             for t in trips:
-                if t.get("isDeleted") or (u["role"] != "admin" and not user_matches(u, t)):
+                if t.get("isDeleted") or (u["role"] == "driver" and not user_matches(u, t)):
                     continue
                 day = day_of(t.get("closeDt") or t.get("openDt"))
                 if not day or not (date_from <= day <= date_to):
@@ -986,13 +1039,16 @@ def make_handler(app):
             if not valid_date(day):
                 raise bad("BAD_DATE", "Неверная дата.")
             cid = (q.get("cabinet") or [None])[0]
-            if not cid or not db.cabinet(cid):
+            allowed = self.scope(u)
+            if allowed is not None and not cid:
+                cid = allowed[0]
+            if not cid or not db.cabinet(cid) or (allowed is not None and cid not in allowed):
                 raise bad("BAD_CABINET", "Выбери кабинет.")
             trips, fetched_at, _w = app.load_trips(day, day, [cid])
             parking = app.parking_by_route()
             items = []
             for t in trips:
-                if t.get("isDeleted") or (u["role"] != "admin" and not user_matches(u, t)):
+                if t.get("isDeleted") or (u["role"] == "driver" and not user_matches(u, t)):
                     continue
                 if day_of(t.get("closeDt") or t.get("openDt")) != day:
                     continue
@@ -1001,23 +1057,24 @@ def make_handler(app):
             return {"items": items, "fetchedAt": fetched_at}
 
         def api_summary(self, q, _):
-            self.need_admin()
+            u = self.need_manager()
+            allowed = self.scope(u)
             date_from, date_to = self.period(q)
             raw = (q.get("percent") or [None])[0]
             percent = db.data["settings"]["percent"] if raw is None else parse_percent(raw)
             if percent is None:
                 raise bad("BAD_PERCENT", "Процент должен быть от 0 до 100.")
-            trips, fetched_at, warnings = app.load_trips(date_from, date_to)
+            trips, fetched_at, warnings = app.load_trips(date_from, date_to, allowed)
             rep = build_report(trips, date_from, date_to, percent, app.deduct_pending())
             deduct_holds = (q.get("holds") or ["1"])[0] != "0"
-            rep.update(app.apply_holds(rep, date_from, date_to, deduct_holds, warnings))
+            rep.update(app.apply_holds(rep, date_from, date_to, deduct_holds, warnings, allowed))
             return {**rep, "fetchedAt": fetched_at, "warnings": warnings}
 
         def api_drivers(self, q, _):
-            """ФИО водителей из WB — чтобы привязать сотрудников."""
-            self.need_admin()
+            """ФИО водителей из WB за период — для выбора в отчёте и привязки сотрудников."""
+            u = self.need_manager()
             date_from, date_to = self.period(q)
-            trips, _, _ = app.load_trips(date_from, date_to)
+            trips, _, _ = app.load_trips(date_from, date_to, self.scope(u))
             seen = {}
             for t in trips:
                 name = t.get("driverName")
@@ -1043,8 +1100,9 @@ def make_handler(app):
         def api_holds(self, q, _):
             u = self.need_user()
             date_from, date_to = self.period(q)
-            if u["role"] == "admin":
-                items, at, warnings = app.load_holds(date_from, date_to)
+            allowed = self.scope(u)
+            if u["role"] in ("admin", "owner"):
+                items, at, warnings = app.load_holds(date_from, date_to, allowed)
             else:
                 items, at, warnings = app.holds_for(u, date_from, date_to)
             by_type = {}
@@ -1073,9 +1131,11 @@ def make_handler(app):
                 "unmatched": {"count": len(unmatched), "sum": sum(i["amount"] for i in unmatched)},
                 "fetchedAt": at, "warnings": warnings,
             }
-            if u["role"] == "admin":
+            if u["role"] in ("admin", "owner"):
                 result["balances"] = []
                 for cab in db.cabinets():
+                    if allowed is not None and cab["id"] not in allowed:
+                        continue
                     try:
                         for sup in cab.get("supplierIds") or []:
                             bal, _ = app.wb_cache.get(("balance", cab["id"], sup), lambda sup=sup, cab=cab: fetch_balance(
@@ -1087,20 +1147,27 @@ def make_handler(app):
 
         # ======== остатки
         def api_remains(self, q, _):
-            self.need_user()
+            u = self.need_user()
+            allowed = self.scope(u)
             data = app.load_remains()
-            items = sorted(data["items"], key=lambda i: -(i.get("shk") or 0))
+            items = data["items"]
+            cabs = [c for c in db.cabinets() if allowed is None or c["id"] in allowed]
+            if allowed is not None:
+                items = remains_of_cabinet(items, cabs[0])
+            items = sorted(items, key=lambda i: -(i.get("shk") or 0))
             carriers = sorted({c["name"] for i in items for c in i["carrierList"]})
             status = [{"cabinet": c["name"], "ok": iso_time(st.get("ok")), "error": st.get("error"),
                        "count": st.get("count")}
-                      for c in db.cabinets() for st in [app.remains_status.get(c["id"], {})]]
+                      for c in cabs for st in [app.remains_status.get(c["id"], {})]]
             return {"items": items, "carriers": carriers, "uploadedAt": data.get("uploadedAt"),
                     "auto": status, "autoMinutes": db.data["settings"].get("remainsMinutes", 10)}
 
         def api_remains_refresh(self, q, _):
-            self.need_user()
+            u = self.need_user()
+            allowed = self.scope(u)
             for c in list(db.cabinets()):
-                app.refresh_remains(c["id"], force=True)
+                if allowed is None or c["id"] in allowed:
+                    app.refresh_remains(c["id"], force=True)
             return self.api_remains(q, None)
 
         def api_remains_upload(self, q, _):

@@ -382,7 +382,7 @@ class ServerTest(unittest.TestCase):
 
     def test_setup_login_and_driver_report(self):
         anon = self.client()
-        self.assertEqual(self.req(anon, "/api/me")[1], {"user": None, "needsSetup": True})
+        self.assertEqual(self.req(anon, "/api/me")[1], {"user": None, "needsSetup": True, "setupNeedsCode": False})
         admin, cid, jwt = self.setup_admin()
         self.assertEqual(self.req(anon, "/api/setup", "POST", {"name": "x", "login": "xxx", "password": "123456"})[0], 403)
         self.assertEqual(self.req(anon, "/api/report?from=2026-10-01&to=2026-10-05")[0], 401)
@@ -437,6 +437,7 @@ class ServerTest(unittest.TestCase):
         admin, cid, _ = self.setup_admin()
         _, u = self.req(admin, "/api/users", "POST", {
             "name": "Иван", "login": "ivan", "password": "pass123", "driverName": "Эмиров Нурали Ханахмедович",
+            "role": "driver",
             "percent": "25"})
         status, r = self.req(admin, f"/api/report?from=2026-10-01&to=2026-10-05&employee={u['id']}")
         self.assertEqual((status, r["percent"], r["retention"]), (200, 25, 1550278))
@@ -494,7 +495,7 @@ class ServerTest(unittest.TestCase):
         self.app.cache.fetcher = orig
 
         driver = self.client()
-        self.req(admin, "/api/users", "POST", {"name": "Вод", "login": "vod", "password": "pass123"})
+        self.req(admin, "/api/users", "POST", {"name": "Вод", "login": "vod", "password": "pass123", "role": "driver"})
         self.req(driver, "/api/login", "POST", {"login": "vod", "password": "pass123"})
         self.assertEqual(self.req(driver, "/api/remains")[0], 200)
         r = urllib.request.Request(self.base + "/api/remains?name=o.xlsx", data=b"x", method="POST",
@@ -584,7 +585,8 @@ class ServerTest(unittest.TestCase):
         self.assertEqual((g["count"], g["sum"], g["driverName"], g["typeName"]), (2, 15000, "Эмиров Нурали Ханахмедович", "Брак"))
         self.assertEqual(r["balances"][0]["fines"], -550)
 
-        self.req(admin, "/api/users", "POST", {"name": "Эмиров Нурали Ханахмедович", "login": "emirov", "password": "pass123"})
+        self.req(admin, "/api/users", "POST", {"name": "Эмиров Нурали Ханахмедович", "login": "emirov", "password": "pass123",
+                                               "role": "driver"})
         driver = self.client()
         self.req(driver, "/api/login", "POST", {"login": "emirov", "password": "pass123"})
         status, r = self.req(driver, "/api/holds?from=2026-10-01&to=2026-10-05")
@@ -613,6 +615,82 @@ class ServerTest(unittest.TestCase):
         self.assertEqual((rep["holds"], rep["payout"]), (15000, 4567464))
         self.assertNotIn("Удержание WB", rep["text"])
         self.assertIn("Прибыль: 45 674,64", rep["text"])
+
+    def test_owner_sees_only_own_cabinet(self):
+        admin, cab_a, jwt_a = self.setup_admin()
+        jwt_b = make_jwt(2000000001)
+        _, cab_b = self.req(admin, "/api/cabinets", "POST", {"name": "ИП Б", "value": jwt_b, "supplierIds": "222"})
+        cab_b = cab_b["id"]
+        self.req(admin, f"/api/cabinets/{cab_a}", "PUT", {"supplierIds": "111"})
+
+        def fetch(f, t, tok):
+            if tok == jwt_a:
+                return [trip(id=1, driverId=1, driverName="Водитель А", totalPrice=1000, closeDt="2026-10-02T10:00:00")]
+            return [trip(id=2, driverId=2, driverName="Водитель Б", totalPrice=5000, closeDt="2026-10-02T10:00:00")]
+
+        self.app.cache.fetcher = fetch
+        self.app.cache.clear()
+        self.app.save_remains([{"routeId": 10, "carrierList": [{"id": "111", "name": "x"}]},
+                               {"routeId": 20, "carrierList": [{"id": "222", "name": "ИП Б"}]}], "f", "a")
+
+        # ИП без кабинета не создаётся.
+        self.assertEqual(self.req(admin, "/api/users", "POST",
+                                  {"name": "ИП А", "login": "ipa", "password": "pass123", "role": "owner"})[0], 400)
+        status, _ = self.req(admin, "/api/users", "POST", {"name": "ИП А", "login": "ipa", "password": "pass123",
+                                                           "role": "owner", "cabinetId": cab_a})
+        self.assertEqual(status, 200)
+        owner = self.client()
+        self.req(owner, "/api/login", "POST", {"login": "ipa", "password": "pass123"})
+
+        period = "from=2026-10-01&to=2026-10-05"
+        _, sm = self.req(owner, f"/api/summary?{period}")
+        self.assertEqual([d["driverName"] for d in sm["drivers"]], ["Водитель А"])
+        _, dr = self.req(owner, f"/api/drivers?{period}")
+        self.assertEqual([d["driverName"] for d in dr["drivers"]], ["Водитель А"])
+        _, rep = self.req(owner, f"/api/report?{period}&driver=" + urllib.parse.quote("Водитель А"))
+        self.assertEqual(rep["sum"], 100000)
+        _, rep = self.req(owner, f"/api/report?{period}&driver=" + urllib.parse.quote("Водитель Б"))
+        self.assertEqual(rep["sum"], 0)  # чужой водитель — пусто
+        _, cabs = self.req(owner, "/api/cabinets")
+        self.assertEqual([c["id"] for c in cabs["cabinets"]], [cab_a])
+        self.assertNotIn("key", cabs["cabinets"][0])
+        _, w = self.req(owner, "/api/waysheets?date=2026-10-02")
+        self.assertEqual([x["id"] for x in w["items"]], [1])
+        self.assertEqual(self.req(owner, f"/api/waysheets?date=2026-10-02&cabinet={cab_b}")[0], 400)
+        _, rm = self.req(owner, "/api/remains")
+        self.assertEqual([i["routeId"] for i in rm["items"]], [10])
+        _, hd = self.req(owner, f"/api/holds?{period}")
+        self.assertEqual([b["cabinet"] for b in hd["balances"]], ["ИП Рахимов Баходур"])
+
+        # Настройки, ключи и сотрудники — только администратору.
+        for path, method in (("/api/users", "GET"), (f"/api/cabinets/{cab_a}", "PUT"), ("/api/settings", "POST"),
+                             ("/api/raw?date=2026-10-02&cabinet=" + cab_a, "GET")):
+            self.assertEqual(self.req(owner, path, method, {} if method != "GET" else None)[0], 403, path)
+
+        # Кабинет удалили — ИП больше ничего не видит.
+        self.req(admin, f"/api/cabinets/{cab_a}", "DELETE")
+        self.assertEqual(self.req(owner, f"/api/summary?{period}")[0], 403)
+
+    def test_setup_code(self):
+        os.environ["SETUP_CODE"] = "c0de1234"
+        try:
+            anon = self.client()
+            self.assertTrue(self.req(anon, "/api/me")[1]["setupNeedsCode"])
+            body = {"name": "А", "login": "admin", "password": "secret1"}
+            self.assertEqual(self.req(anon, "/api/setup", "POST", body)[0], 403)
+            self.assertEqual(self.req(anon, "/api/setup", "POST", {**body, "code": "wrong"})[0], 403)
+            self.assertEqual(self.req(anon, "/api/setup", "POST", {**body, "code": "c0de1234"})[0], 200)
+        finally:
+            del os.environ["SETUP_CODE"]
+
+    def test_secure_cookie_behind_https_proxy(self):
+        anon = self.client()
+        r = urllib.request.Request(self.base + "/api/setup", method="POST",
+                                   data=json.dumps({"name": "А", "login": "admin", "password": "secret1"}).encode(),
+                                   headers={"Content-Type": "application/json", "X-Forwarded-Proto": "https"})
+        with anon.open(r) as resp:
+            self.assertIn("Secure", resp.headers["Set-Cookie"])
+            self.assertIn("HttpOnly", resp.headers["Set-Cookie"])
 
     def test_static(self):
         with urllib.request.urlopen(self.base + "/") as r:

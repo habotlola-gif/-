@@ -205,10 +205,11 @@
 
   // ================================================================ вход
 
-  function renderAuth(needsSetup = false) {
+  function renderAuth(needsSetup = false, needsCode = false) {
     const login = h('input', { class: 'input', autocomplete: 'username', required: true });
     const pass = h('input', { class: 'input', type: 'password', autocomplete: needsSetup ? 'new-password' : 'current-password', required: true });
     const name = h('input', { class: 'input', required: true });
+    const code = h('input', { class: 'input', autocomplete: 'off', required: true });
     const out = h('div');
     const form = h('form', { class: 'card', onsubmit: async (e) => {
       e.preventDefault();
@@ -216,12 +217,14 @@
       try {
         const body = { login: login.value, password: pass.value };
         if (needsSetup) body.name = name.value;
+        if (needsCode) body.code = code.value;
         const r = await api(needsSetup ? '/api/setup' : '/api/login', { method: 'POST', body });
         state.me = r.user;
         renderApp();
       } catch (err) { fill(out, msg(err.message)); }
     } },
     needsSetup ? h('p', { class: 'small muted', text: 'Первый запуск: создайте администратора. Он добавит кабинеты WB и сотрудников.' }) : null,
+    needsCode ? h('label', { class: 'field' }, h('span', { text: 'Код установки (из вывода установки на сервере)' }), code) : null,
     needsSetup ? h('label', { class: 'field' }, h('span', { text: 'ФИО' }), name) : null,
     h('label', { class: 'field' }, h('span', { text: 'Логин' }), login),
     h('label', { class: 'field' }, h('span', { text: needsSetup ? 'Пароль (от 6 символов)' : 'Пароль' }), pass),
@@ -241,9 +244,14 @@
     { id: 'holds', title: 'Удержания WB', ico: '🧾' },
     { id: 'remains', title: 'Остатки', ico: '📦' },
     { id: 'waysheets', title: 'Путевые листы', ico: '🗒' },
-    { id: 'summary', title: 'Ведомость', ico: '📊', admin: true },
+    { id: 'summary', title: 'Ведомость', ico: '📊', manager: true },
     { id: 'settings', title: 'Настройки', ico: '⚙' },
   ];
+
+  const ROLE_NAMES = { admin: 'Администратор', owner: 'ИП', driver: 'Водитель' };
+  // Администратор и ИП видят всех водителей (ИП — только своего кабинета).
+  const isManager = () => state.me.role === 'admin' || state.me.role === 'owner';
+  const canSee = (p) => !p.manager || isManager();
 
   function openMenu() {
     const bg = h('div', { class: 'drawer-bg', onclick: () => close() });
@@ -253,10 +261,10 @@
         h('button', { class: 'btn menu-btn', type: 'button', text: '☰ Меню', onclick: () => close() }),
         h('button', { class: 'icon-btn', type: 'button', text: '✕', onclick: () => close() })),
       h('div', { class: 'who' },
-        h('div', { class: 'label', text: state.me.role === 'admin' ? 'Администратор' : 'Сотрудник' }),
+        h('div', { class: 'label', text: ROLE_NAMES[state.me.role] || 'Сотрудник' }),
         h('div', { class: 'n', text: state.me.name }),
         h('div', { class: 'small muted', text: 'LogisticaWB' })),
-      ...PAGES.filter((p) => !p.admin || state.me.role === 'admin').map((p) => h('button', {
+      ...PAGES.filter(canSee).map((p) => h('button', {
         class: `nav-item ${state.page === p.id ? 'on' : ''}`, type: 'button',
         onclick: () => { close(); go(p.id); },
       }, h('span', { text: p.ico }), p.title)),
@@ -276,7 +284,7 @@
   }
 
   function renderApp() {
-    const page = PAGES.find((p) => p.id === state.page && (!p.admin || state.me.role === 'admin')) || PAGES[0];
+    const page = PAGES.find((p) => p.id === state.page && canSee(p)) || PAGES[0];
     state.page = page.id;
     const main = h('main', { class: `wrap ${page.id === 'summary' ? 'wide' : ''}` });
     root.replaceChildren(
@@ -293,12 +301,14 @@
   }
 
   // Администратор выбирает: себя, сотрудника или любого водителя из WB за период.
+  // ИП — водителя своего кабинета из WB.
   async function employeeSelect(onChange) {
-    if (state.me.role !== 'admin') return null;
+    if (!isManager()) return null;
+    const admin = state.me.role === 'admin';
     const sel = h('select', { class: 'input', onchange: () => { state.employee = sel.value; onChange(); } },
-      h('option', { value: '', text: `${state.me.name} (я)` }));
+      admin ? h('option', { value: '', text: `${state.me.name} (я)` }) : null);
     const [usersRes, driversRes] = await Promise.allSettled([
-      api('/api/users'),
+      admin ? api('/api/users') : Promise.resolve({ users: [] }),
       api(`/api/drivers?${new URLSearchParams({ from: state.period.from, to: state.period.to })}`),
     ]);
     if (usersRes.status === 'fulfilled') {
@@ -315,9 +325,10 @@
           return h('option', { value: v, text: `${d.driverName} · рейсов ${d.trips}`, selected: v === state.employee });
         })));
     }
-    if (![...sel.options].some((o) => o.value === state.employee)) state.employee = '';
+    if (![...sel.options].some((o) => o.value === state.employee)) state.employee = sel.options[0] ? sel.options[0].value : '';
     sel.value = state.employee;
-    return h('label', { class: 'field' }, h('span', { text: 'Сотрудник' }), sel);
+    if (!sel.options.length) sel.append(h('option', { value: '', text: 'За период водителей нет' }));
+    return h('label', { class: 'field' }, h('span', { text: admin ? 'Сотрудник' : 'Водитель' }), sel);
   }
 
   function employeeQuery(q) {
@@ -361,7 +372,7 @@
             h('span', { text: `Вычитать удержания WB${r.holds ? ` (${rub(r.holds)} ₽: ${r.holdsByType.map((x) => `${x.type.toLowerCase()} ${rub(x.sum)}`).join(', ')})` : ' — за период их нет'}` })),
           h('div', { class: 'stat' }, h('div', { class: 'label', text: 'Путевых записей' }), h('div', { class: 'value', text: String(r.tripsCount) })),
           h('div', { class: 'stat' }, h('div', { class: 'label', text: 'Прибыль' }), h('div', { class: 'value', text: rub(r.payout) })),
-          !r.tripsCount && !r.inTransit ? msg(state.me.role === 'admin' && !state.employee
+          !r.tripsCount && !r.inTransit ? msg(isManager() && !state.employee
             ? 'За период нет путевых с вашим ФИО. Выберите водителя в списке «Сотрудник» — там есть все водители из WB за этот период.'
             : `За период нет путевых водителя «${r.employee.driverName || r.employee.name}». Если в WB ФИО записано иначе, `
               + 'администратор может указать «ФИО в WB» или ID водителя в настройках сотрудника.', 'warn') : null,
@@ -409,7 +420,7 @@
           h('span', {}, h('span', { class: 'pill warn', text: g.typeName }), g.refunded ? h('span', { class: 'pill', text: 'возвращено' }) : null),
           h('span', { class: 'num' }, h('b', { text: `${rub(g.sum)} ₽` }), h('div', { class: 'small muted', text: `${g.count} шт.` }))),
         h('div', { text: `Путевой лист №${g.waysheetId || '—'}${g.reason ? ` (${g.reason})` : ''}` }),
-        h('div', { class: 'small muted', text: [state.me.role === 'admin' ? (g.driverName || 'водитель не найден') : null,
+        h('div', { class: 'small muted', text: [isManager() ? (g.driverName || 'водитель не найден') : null,
           ruDate(g.day), g.cabinetName].filter(Boolean).join(' · ') }))));
       fill(content,
         ...r.warnings.map((w) => msg(w, 'warn')),
@@ -424,7 +435,7 @@
         r.byType.length ? h('div', { class: 'list-item' }, h('div', { class: 'label', text: 'По типу' }),
           ...r.byType.map((t) => h('div', { class: 'small kv' },
             h('span', { class: 'muted', text: `${t.type} · ${t.count} шт.` }), h('span', { text: rub(t.sum) })))) : null,
-        state.me.role === 'admin' && r.unmatched.count ? h('p', { class: 'small muted',
+        isManager() && r.unmatched.count ? h('p', { class: 'small muted',
           text: `Не нашёл водителя для ${r.unmatched.count} шт. на ${rub(r.unmatched.sum)} ₽ — путевой старше месяца или из другого кабинета.` }) : null,
         h('p', { class: 'small muted', text: 'В отчёте удержания вычитаются из прибыли (по дате удержания); там же их можно отключить.' }),
         r.count ? h('div', { class: 'field' }, kind) : h('p', { class: 'muted', text: 'За период удержаний нет.' }),
@@ -456,7 +467,7 @@
         r.items.length ? null : h('p', { class: 'muted', text: 'За период удержаний нет.' }),
         ...r.items.map((t) => h('div', { class: 'list-item' },
           h('div', { class: 'row between' }, h('span', { class: 't', text: `№ ${t.id}` }), h('b', { text: rub(t.fine) })),
-          state.me.role === 'admin' ? h('div', { text: t.driverName }) : null,
+          isManager() ? h('div', { text: t.driverName }) : null,
           h('div', { class: 'small muted', text: `${t.cabinetName} · ${t.closeDt ? `закрыт ${dt(t.closeDt)}` : `в пути с ${dt(t.openDt)}`}` }),
           h('div', {}, fineStatusPill(t)),
           ...fineTypeLines(t.fineParts))));
@@ -592,6 +603,7 @@
 
     try {
       const { cabinets } = await api('/api/cabinets');
+      if (cabinets.length === 1) state.cabinet = cabinets[0].id;
       for (const c of cabinets) cab.append(h('option', { value: c.id, text: c.name, selected: c.id === state.cabinet }));
       if (!cabinets.some((c) => c.id === state.cabinet)) state.cabinet = '';
       if (!cabinets.length) status.textContent = 'Кабинеты ещё не добавлены. Администратор добавляет их в настройках.';
@@ -844,15 +856,26 @@
   async function settingsUsers(box) {
     const out = h('div');
     const list = h('div');
+    let cabinets = [];
+    try { ({ cabinets } = await api('/api/cabinets')); } catch { /* без списка */ }
+    const cabName = (id) => (cabinets.find((c) => c.id === id) || {}).name || 'кабинет не выбран';
+    const cabSelect = (value) => h('select', { class: 'input' }, h('option', { value: '', text: 'Выберите кабинет' }),
+      ...cabinets.map((c) => h('option', { value: c.id, text: c.name, selected: c.id === value })));
+
     const f = {
-      name: h('input', { class: 'input' }),
+      name: h('input', { class: 'input', placeholder: 'ИП Иванов Иван' }),
       login: h('input', { class: 'input', autocomplete: 'off' }),
       password: h('input', { class: 'input', type: 'password', autocomplete: 'new-password' }),
-      role: h('select', { class: 'input' }, h('option', { value: 'driver', text: 'Водитель' }), h('option', { value: 'admin', text: 'Администратор' })),
+      role: h('select', { class: 'input' },
+        h('option', { value: 'owner', text: 'ИП — видит свой кабинет' }),
+        h('option', { value: 'admin', text: 'Администратор — всё и настройки' }),
+        h('option', { value: 'driver', text: 'Водитель — только себя' })),
+      cabinetId: cabSelect(cabinets.length === 1 ? cabinets[0].id : ''),
       driverName: h('input', { class: 'input', list: 'wb-drivers', placeholder: 'Как в WB, если отличается от ФИО' }),
       driverId: h('input', { class: 'input', placeholder: 'Необязательно' }),
       percent: h('input', { class: 'input', type: 'number', min: '0', max: '100', step: '0.01', placeholder: 'Общий' }),
     };
+    const cabField = h('label', { class: 'field' }, h('span', { text: 'Кабинет' }), f.cabinetId);
     const dl = h('datalist', { id: 'wb-drivers' });
     const loadDrivers = h('button', { class: 'btn small', type: 'button', text: 'Подтянуть ФИО из WB за 30 дней', onclick: async () => {
       loadDrivers.disabled = true;
@@ -863,28 +886,37 @@
       } catch (e) { fill(out, msg(e.message)); }
       loadDrivers.disabled = false;
     } });
+    const driverFields = h('div', {},
+      h('label', { class: 'field' }, h('span', { text: 'ФИО в WB' }), f.driverName, dl),
+      loadDrivers,
+      h('div', { class: 'grid2' },
+        h('label', { class: 'field' }, h('span', { text: 'ID водителя WB' }), f.driverId),
+        h('label', { class: 'field' }, h('span', { text: 'Удержание, %' }), f.percent)));
+    const syncRole = () => {
+      cabField.hidden = f.role.value !== 'owner';
+      driverFields.hidden = f.role.value !== 'driver';
+    };
+    f.role.addEventListener('change', syncRole);
+    syncRole();
 
     box.append(h('div', { class: 'card' },
-      h('div', { class: 'label', text: 'Сотрудники' }),
-      h('p', { class: 'small muted', text: 'Водитель видит только свои путевые и отчёты. Путевые находятся по ID водителя WB, а если его нет — по ФИО.' }),
+      h('div', { class: 'label', text: 'Пользователи' }),
+      h('p', { class: 'small muted', text: 'ИП входит по логину и паролю и видит всё по своему кабинету: отчёты, ведомость, путевые, удержания, остатки. Ключей и настроек он не видит.' }),
       list,
-      h('details', {}, h('summary', { text: '+ Добавить сотрудника' }),
-        h('label', { class: 'field' }, h('span', { text: 'ФИО' }), f.name),
+      h('details', {}, h('summary', { text: '+ Добавить пользователя' }),
+        h('label', { class: 'field' }, h('span', { text: 'Имя (ФИО или название ИП)' }), f.name),
         h('div', { class: 'grid2' },
           h('label', { class: 'field' }, h('span', { text: 'Логин' }), f.login),
-          h('label', { class: 'field' }, h('span', { text: 'Пароль' }), f.password)),
+          h('label', { class: 'field' }, h('span', { text: 'Пароль (от 6 символов)' }), f.password)),
         h('label', { class: 'field' }, h('span', { text: 'Роль' }), f.role),
-        h('label', { class: 'field' }, h('span', { text: 'ФИО в WB' }), f.driverName, dl),
-        loadDrivers,
-        h('div', { class: 'grid2' },
-          h('label', { class: 'field' }, h('span', { text: 'ID водителя WB' }), f.driverId),
-          h('label', { class: 'field' }, h('span', { text: 'Удержание, %' }), f.percent)),
+        cabField,
+        driverFields,
         h('button', { class: 'btn light', type: 'button', text: 'Добавить', onclick: async () => {
           try {
             const body = Object.fromEntries(Object.entries(f).map(([k, el]) => [k, el.value]));
             await api('/api/users', { method: 'POST', body });
-            Object.values(f).forEach((el) => { if (el.tagName === 'INPUT') el.value = ''; });
-            fill(out, msg('Сотрудник добавлен.', 'ok'));
+            [f.name, f.login, f.password, f.driverName, f.driverId, f.percent].forEach((el) => { el.value = ''; });
+            fill(out, msg('Пользователь добавлен. Передайте ему адрес сайта, логин и пароль.', 'ok'));
             draw();
           } catch (e) { fill(out, msg(e.message)); }
         } })),
@@ -894,24 +926,29 @@
       const { users } = await api('/api/users');
       fill(list, ...users.map((u) => {
         const pw = h('input', { class: 'input', type: 'password', placeholder: 'Новый пароль', autocomplete: 'new-password' });
+        const cab = cabSelect(u.cabinetId);
         const pc = h('input', { class: 'input', type: 'number', min: '0', max: '100', step: '0.01', placeholder: 'Общий', value: u.percent ?? '' });
         const dn = h('input', { class: 'input', list: 'wb-drivers', value: u.driverName || '', placeholder: 'Как в ФИО' });
         const di = h('input', { class: 'input', value: u.driverId || '', placeholder: 'Не задан' });
+        const role = ROLE_NAMES[u.role] || u.role;
         return h('div', { class: 'list-item' },
           h('div', { class: 'row between' },
             h('span', { class: 't', text: u.name }),
-            h('span', { class: 'small muted', text: `${u.login} · ${u.role === 'admin' ? 'администратор' : 'водитель'}${u.percent !== null ? ` · ${u.percent}%` : ''}` })),
+            h('span', { class: 'small muted', text: `${u.login} · ${role}${u.role === 'owner' ? ` · ${cabName(u.cabinetId)}` : ''}` })),
           h('details', {}, h('summary', { text: 'Изменить' }),
-            h('div', { class: 'grid2' },
+            u.role === 'owner' ? h('label', { class: 'field' }, h('span', { text: 'Кабинет' }), cab) : null,
+            u.role === 'driver' ? h('div', { class: 'grid2' },
               h('label', { class: 'field' }, h('span', { text: 'ФИО в WB' }), dn),
-              h('label', { class: 'field' }, h('span', { text: 'ID водителя WB' }), di)),
+              h('label', { class: 'field' }, h('span', { text: 'ID водителя WB' }), di)) : null,
             h('div', { class: 'grid2' },
-              h('label', { class: 'field' }, h('span', { text: 'Удержание, %' }), pc),
-              h('label', { class: 'field' }, h('span', { text: 'Пароль' }), pw)),
+              u.role === 'driver' ? h('label', { class: 'field' }, h('span', { text: 'Удержание, %' }), pc) : null,
+              h('label', { class: 'field' }, h('span', { text: 'Новый пароль' }), pw)),
             h('div', { class: 'row' },
               h('button', { class: 'btn small light', type: 'button', text: 'Сохранить', onclick: async () => {
                 try {
-                  const body = { driverName: dn.value, driverId: di.value, percent: pc.value };
+                  const body = {};
+                  if (u.role === 'owner') body.cabinetId = cab.value;
+                  if (u.role === 'driver') Object.assign(body, { driverName: dn.value, driverId: di.value, percent: pc.value });
                   if (pw.value) body.password = pw.value;
                   await api(`/api/users/${u.id}`, { method: 'PUT', body });
                   fill(out, msg('Сохранено.', 'ok'));
@@ -919,7 +956,7 @@
                 } catch (e) { fill(out, msg(e.message)); }
               } }),
               u.id === state.me.id ? null : h('button', { class: 'btn small danger', type: 'button', text: 'Удалить', onclick: async () => {
-                if (!confirm(`Удалить сотрудника «${u.name}»?`)) return;
+                if (!confirm(`Удалить пользователя «${u.name}»?`)) return;
                 await api(`/api/users/${u.id}`, { method: 'DELETE' });
                 draw();
               } }))));
@@ -1007,7 +1044,7 @@
   (async () => {
     try {
       const r = await api('/api/me');
-      if (r.needsSetup) return renderAuth(true);
+      if (r.needsSetup) return renderAuth(true, r.setupNeedsCode);
       if (!r.user) return renderAuth(false);
       state.me = r.user;
       const p = location.hash.slice(1);
