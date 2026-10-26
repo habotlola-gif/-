@@ -231,6 +231,15 @@ const server = http.createServer((req, res) => {
 });
 
 if (require.main === module) {
+  server.on('error', (e) => {
+    if (e.code === 'EADDRINUSE') {
+      console.error(`Порт ${PORT} уже занят — скорее всего, сайт уже запущен в другом окне.`);
+      console.error(`Закройте то окно (или нажмите в нём Ctrl+C) либо запустите на другом порту: set PORT=3001 && npm start`);
+    } else {
+      console.error('Не удалось запустить сервер:', e.message);
+    }
+    process.exit(1);
+  });
   server.listen(PORT, HOST, () => {
     console.log(`Расчёт зарплаты: http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
     if (HOST !== '127.0.0.1' && HOST !== 'localhost' && !APP_PASSWORD) {
