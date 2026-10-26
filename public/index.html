@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Зарплата водителей</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="top">
+    <h1>Зарплата водителей <span class="muted">· WB Логистика</span></h1>
+    <button id="keyToggle" class="key-badge" type="button">Ключ…</button>
+  </header>
+
+  <section id="keyPanel" class="panel" hidden>
+    <h2>Ключ WB</h2>
+    <p id="keyStatus" class="muted">Проверяю…</p>
+    <p class="hint">
+      Откройте <b>ol.wildberries.ru</b>, скопируйте адрес страницы целиком (в нём есть <code>bearer=</code>)
+      и вставьте сюда. Ключ хранится только на сервере в зашифрованном виде и в браузер не возвращается.
+    </p>
+    <form id="keyForm" class="row" autocomplete="off">
+      <input id="keyInput" type="password" placeholder="https://ol.wildberries.ru/…bearer=…" spellcheck="false">
+      <button type="submit">Сохранить</button>
+      <button id="keyDelete" type="button" class="ghost">Удалить</button>
+    </form>
+  </section>
+
+  <form id="periodForm" class="panel controls">
+    <label>С <input id="from" type="date" required></label>
+    <label>По <input id="to" type="date" required></label>
+    <div class="quick">
+      <button type="button" data-range="yesterday" class="ghost">Вчера</button>
+      <button type="button" data-range="today" class="ghost">Сегодня</button>
+      <button type="button" data-range="week" class="ghost">Прошлая неделя</button>
+      <button type="button" data-range="month" class="ghost">Этот месяц</button>
+    </div>
+    <label>Удержание, % <input id="percent" type="number" min="0" max="100" step="0.01" required></label>
+    <button id="savePercent" type="button" class="ghost" title="Сделать процентом по умолчанию">★</button>
+    <button type="submit">Рассчитать</button>
+  </form>
+
+  <div id="message" class="message" hidden></div>
+
+  <main id="result" hidden>
+    <section class="totals" id="totals"></section>
+
+    <div class="table-head">
+      <input id="filter" type="search" placeholder="Поиск водителя или номера">
+      <span id="meta" class="muted"></span>
+      <button id="csv" type="button" class="ghost">Скачать CSV</button>
+      <button id="print" type="button" class="ghost">Печать</button>
+    </div>
+
+    <div class="table-wrap">
+      <table id="drivers">
+        <thead>
+          <tr>
+            <th>Водитель</th>
+            <th>Машина</th>
+            <th class="num">Рейсов</th>
+            <th class="num">Сумма</th>
+            <th class="num">Удержание</th>
+            <th class="num">Штрафы</th>
+            <th class="num">К выплате</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+        <tfoot></tfoot>
+      </table>
+    </div>
+
+    <section id="transitBlock" class="panel" hidden>
+      <h2>В пути <span id="transitCount" class="muted"></span></h2>
+      <p class="muted">Рейсы без даты закрытия в расчёт не входят.</p>
+      <div class="table-wrap">
+        <table id="transit">
+          <thead>
+            <tr><th>Водитель</th><th>Машина</th><th>Выезд</th><th>Маршрут</th><th class="num">Сумма</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="muted">
+    Данные из неофициального API WB: формат может поменяться без предупреждения.
+    Один и тот же период запрашивается у WB не чаще раза в минуту.
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
