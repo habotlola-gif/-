@@ -23,6 +23,31 @@ def make_jwt(exp):
     return f"{b64({'alg': 'HS256'})}.{b64({'exp': exp})}.c2lnbmF0dXJl"
 
 
+def make_xlsx(rows):
+    """Минимальный xlsx без сторонних пакетов: строки — inlineStr, числа — как есть."""
+    import io
+    import zipfile
+    from xml.sax.saxutils import escape
+
+    def cell(v):
+        if isinstance(v, (int, float)):
+            return f"<c><v>{v}</v></c>"
+        return f'<c t="inlineStr"><is><t>{escape(str(v))}</t></is></c>'
+
+    sheet = ('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+             + "".join("<row>" + "".join(cell(v) for v in r) + "</row>" for r in rows)
+             + "</sheetData></worksheet>")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("xl/worksheets/sheet1.xml", sheet)
+    return buf.getvalue()
+
+
+REMAINS_HEADER = ["ID лог объекта", "Имя лог объекта", "ID маршрута", "Автозаявки", "Время подачи ТС", "Парковка",
+                  "Кол-во коробок", "Кол-во КГТ", "Кол-во ШК", "Норма выезда ШК", "Объём (л)",
+                  "Среднесуточное накопление, л", "Перевозчики", "Дистанция в сторону, км"]
+
+
 def trip(**over):
     t = {"id": 1, "driverName": "Иванов И.", "driverId": 1, "vehicleNumberPlate": "А001АА777",
          "openDt": "2026-10-25T08:00:00", "closeDt": "2026-10-25T18:00:00",
@@ -131,6 +156,26 @@ class FineTest(unittest.TestCase):
         self.assertIn("Штраф за брак всего 100,00", text)
         self.assertIn("Штраф без указания вида всего 50,00", text)
         self.assertIn("В т.ч. на рассмотрении: 50,00", text)
+
+
+class RemainsTest(unittest.TestCase):
+    def test_parse(self):
+        import remains
+        data = make_xlsx([REMAINS_HEADER,
+                          [210515, "СЦ Вёшки", 42225, "нет", "", "36", 50, 26, 1415, 1132, 4525.552, 443560.526,
+                           "10105118 ИП Казакбиев Джамалутдин Абдулгамидович", 32.193]])
+        items = remains.parse_remains(data, "Остатки.xlsx")
+        self.assertEqual(len(items), 1)
+        i = items[0]
+        self.assertEqual((i["routeId"], i["parking"], i["boxes"], i["kgt"], i["shk"], i["shkNorm"]),
+                         (42225, "36", 50, 26, 1415, 1132))
+        self.assertEqual(i["carrierList"], [{"id": "10105118", "name": "ИП Казакбиев Джамалутдин Абдулгамидович"}])
+        with self.assertRaises(remains.RemainsError):
+            remains.parse_remains(b"not a zip", "x.xlsx")
+        with self.assertRaises(remains.RemainsError):
+            remains.parse_remains(make_xlsx([["что-то"], [1]]), "x.xlsx")
+        csv_items = remains.parse_remains("ID маршрута;Кол-во ШК;Парковка\n7;100;5\n".encode(), "o.csv")
+        self.assertEqual((csv_items[0]["routeId"], csv_items[0]["shk"]), (7, 100))
 
 
 class KeyTest(unittest.TestCase):
@@ -305,6 +350,44 @@ class ServerTest(unittest.TestCase):
             self.assertTrue(Path(d, f"wb-key-{a.db.cabinets()[0]['id']}.enc").exists())
         finally:
             shutil.rmtree(d)
+
+    def test_remains_upload_and_parking(self):
+        admin, cid, _ = self.setup_admin()
+        rows = [REMAINS_HEADER,
+                [1, "СЦ Вёшки", 42225, "нет", "", "62", 50, 26, 1415, 1132, 1.5, 2.5, "1 ИП А", 3.2],
+                [1, "СЦ Вёшки", 99, "нет", "", "7", 1, 0, 10, 20, 1, 1, "2 ИП Б", 1]]
+        r = urllib.request.Request(self.base + "/api/remains?name=o.xlsx", data=make_xlsx(rows), method="POST",
+                                   headers={"Content-Type": "application/octet-stream"})
+        with admin.open(r) as resp:
+            self.assertEqual(json.loads(resp.read())["loaded"], 2)
+        status, body = self.req(admin, "/api/remains")
+        self.assertEqual((status, [i["routeId"] for i in body["items"]], body["carriers"]), (200, [42225, 99], ["ИП А", "ИП Б"]))
+        # Повторная выгрузка по «ИП А» заменяет только его маршруты.
+        r = urllib.request.Request(self.base + "/api/remains?name=o.xlsx", method="POST",
+                                   data=make_xlsx([REMAINS_HEADER, [1, "СЦ", 5, "", "", "1", 0, 0, 3, 1, 0, 0, "1 ИП А", 0]]),
+                                   headers={"Content-Type": "application/octet-stream"})
+        admin.open(r).read()
+        self.assertEqual(sorted(i["routeId"] for i in self.req(admin, "/api/remains")[1]["items"]), [5, 99])
+
+        # Парковка в карточке путевого — по ID маршрута из остатков.
+        self.app.save_remains([{"routeId": 555, "parking": "62", "carrierList": [{"id": None, "name": "ИП В"}]}], "x", "a")
+        self.app.db.data["settings"]["percent"] = 20
+        orig = self.app.cache.fetcher
+        self.app.cache.fetcher = lambda f, t, tok: [trip(id=1, logRouteId=555, openDt="2026-10-03T08:00:00", closeDt=None)]
+        self.app.cache.clear()
+        _, w = self.req(admin, f"/api/waysheets?date=2026-10-03&cabinet={cid}")
+        self.assertEqual(w["items"][0]["parking"], "62")
+        self.app.cache.fetcher = orig
+
+        driver = self.client()
+        self.req(admin, "/api/users", "POST", {"name": "Вод", "login": "vod", "password": "pass123"})
+        self.req(driver, "/api/login", "POST", {"login": "vod", "password": "pass123"})
+        self.assertEqual(self.req(driver, "/api/remains")[0], 200)
+        r = urllib.request.Request(self.base + "/api/remains?name=o.xlsx", data=b"x", method="POST",
+                                   headers={"Content-Type": "application/octet-stream"})
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            driver.open(r)
+        self.assertEqual(cm.exception.code, 403)
 
     def test_static(self):
         with urllib.request.urlopen(self.base + "/") as r:

@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from remains import RemainsError, parse_remains
 from core import (NO_TYPE, KeyStore, WaysheetCache, WbError, add_days, build_report, day_of,
                   extract_token, fines_summary, key_info, parse_percent, trip_view, valid_date)
 
@@ -215,6 +216,37 @@ class App:
         """Вычитать ли штрафы, которые WB ещё рассматривает."""
         return self.db.data["settings"].get("deductPending", True)
 
+    # --- остатки
+    def remains_file(self):
+        return self.db.dir / "remains.json"
+
+    def load_remains(self):
+        try:
+            return json.loads(self.remains_file().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"items": []}
+
+    def save_remains(self, new_items, file_name, user_name):
+        """Новая выгрузка заменяет маршруты своих перевозчиков, остальные остаются."""
+        now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        def names(i):
+            return {c["name"] for c in i.get("carrierList") or []} or {""}
+
+        carriers = set().union(*(names(i) for i in new_items))
+        with self.db.lock:
+            kept = [i for i in self.load_remains()["items"] if not names(i) & carriers]
+            for i in new_items:
+                i.update({"uploadedAt": now, "fileName": file_name, "uploadedBy": user_name})
+            data = {"items": kept + new_items, "uploadedAt": now}
+            self.db.dir.mkdir(parents=True, exist_ok=True)
+            tmp = self.remains_file().with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self.remains_file())
+        return data
+
+    def parking_by_route(self):
+        return {str(i["routeId"]): i.get("parking") for i in self.load_remains()["items"] if i.get("parking")}
+
     def load_trips(self, date_from, date_to, cabinet_ids=None):
         """Путевые за период из WB (to + 1 день), по всем или выбранным кабинетам."""
         trips, fetched, errors = [], [], []
@@ -257,11 +289,13 @@ class App:
         }
 
 
-def waysheet_card(t):
+def waysheet_card(t, parking=None):
     v = trip_view(t)
     v.update({"driverName": t.get("driverName") or "—", "driverId": t.get("driverId"),
               "cabinetId": t.get("_cabinet"), "cabinetName": t.get("_cabinetName") or "",
-              "total": v["price"] - v["fine"]})
+              "total": v["price"] - v["fine"],
+              # Парковку WB даёт в выгрузке остатков, связываем по ID маршрута.
+              "parking": (parking or {}).get(str(t.get("logRouteId")))})
     return v
 
 
@@ -459,8 +493,8 @@ def make_handler(app):
                 u["name"] = name
             if not existing or "login" in b:
                 u["login"] = login
-            if role or "role" in b:
-                r = role or b.get("role")
+            if role or "role" in b or not existing:
+                r = role or b.get("role") or "driver"
                 if r not in ("admin", "driver"):
                     raise bad("BAD_USER", "Неверная роль.")
                 u["role"] = r
@@ -655,13 +689,14 @@ def make_handler(app):
             if not cid or not db.cabinet(cid):
                 raise bad("BAD_CABINET", "Выбери кабинет.")
             trips, fetched_at, _w = app.load_trips(day, day, [cid])
+            parking = app.parking_by_route()
             items = []
             for t in trips:
                 if t.get("isDeleted") or (u["role"] != "admin" and not user_matches(u, t)):
                     continue
                 if day_of(t.get("closeDt") or t.get("openDt")) != day:
                     continue
-                items.append(waysheet_card(t))
+                items.append(waysheet_card(t, parking))
             items.sort(key=lambda r: str(r["openDt"]))
             return {"items": items, "fetchedAt": fetched_at}
 
@@ -701,6 +736,36 @@ def make_handler(app):
             self.send(200, json.dumps(items, ensure_ascii=False, indent=2).encode(), {
                 "Content-Type": "application/json; charset=utf-8",
                 "Content-Disposition": f'attachment; filename="wb-{day}.json"'})
+
+        # ======== остатки
+        def api_remains(self, q, _):
+            self.need_user()
+            data = app.load_remains()
+            items = sorted(data["items"], key=lambda i: -(i.get("shk") or 0))
+            carriers = sorted({c["name"] for i in items for c in i["carrierList"]})
+            return {"items": items, "carriers": carriers, "uploadedAt": data.get("uploadedAt")}
+
+        def api_remains_upload(self, q, _):
+            u = self.need_admin()
+            n = int(self.headers.get("Content-Length") or 0)
+            if not n or n > 10 * 1024 * 1024:
+                raise bad("BAD_FILE", "Нужен файл выгрузки до 10 МБ.")
+            name = (q.get("name") or ["остатки.xlsx"])[0][:200]
+            try:
+                items = parse_remains(self.rfile.read(n), name)
+            except RemainsError as e:
+                raise bad("BAD_FILE", str(e))
+            except Exception:
+                raise bad("BAD_FILE", "Не удалось прочитать файл. Загрузите выгрузку остатков из WB (.xlsx или .csv).")
+            app.save_remains(items, name, u["name"])
+            return {"loaded": len(items)}
+
+        def api_remains_clear(self, q, _):
+            self.need_admin()
+            with db.lock:
+                if app.remains_file().exists():
+                    app.remains_file().unlink()
+            return {"ok": True}
 
         # --- методы HTTP
         def handle_method(self, method):
@@ -752,6 +817,9 @@ def make_handler(app):
         ("GET", "/api/summary"): Handler.api_summary,
         ("GET", "/api/drivers"): Handler.api_drivers,
         ("GET", "/api/raw"): Handler.api_raw,
+        ("GET", "/api/remains"): Handler.api_remains,
+        ("POST", "/api/remains"): Handler.api_remains_upload,
+        ("DELETE", "/api/remains"): Handler.api_remains_clear,
     }
     return Handler
 

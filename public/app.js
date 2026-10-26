@@ -392,6 +392,99 @@
     };
   }
 
+  // ================================================================ Остатки
+
+  async function renderRemains(main) {
+    const body = h('div');
+    const status = h('div', { class: 'status' });
+    const carrier = h('select', { class: 'input', onchange: draw }, h('option', { value: '', text: 'Все перевозчики' }));
+    const search = h('input', { class: 'input', type: 'search', placeholder: 'Маршрут или парковка', oninput: draw });
+    let data = { items: [], carriers: [] };
+
+    let upload = null;
+    if (state.me.role === 'admin') {
+      const file = h('input', { type: 'file', accept: '.xlsx,.csv', class: 'input' });
+      const btn = h('button', { class: 'btn light', type: 'button', text: 'Загрузить', onclick: async () => {
+        const f = file.files[0];
+        if (!f) { fill(status, msg('Выберите файл выгрузки остатков из WB (.xlsx).')); return; }
+        btn.disabled = true;
+        status.textContent = 'Загружаю…';
+        try {
+          const res = await fetch(`/api/remains?${new URLSearchParams({ name: f.name })}`, {
+            method: 'POST', body: f, headers: { 'Content-Type': 'application/octet-stream' }, credentials: 'same-origin' });
+          const r = await res.json();
+          if (!res.ok) throw new Error(r.error.message);
+          fill(status, msg(`Загружено маршрутов: ${r.loaded}.`, 'ok'));
+          file.value = '';
+          await load();
+        } catch (e) { fill(status, msg(e.message)); }
+        btn.disabled = false;
+      } });
+      upload = h('details', {}, h('summary', { text: 'Загрузить выгрузку из WB' }),
+        h('p', { class: 'small muted', text: 'Скачайте на ol.wildberries.ru выгрузку остатков (Excel) и загрузите её сюда. '
+          + 'Маршруты тех же перевозчиков заменятся, остальные останутся.' }),
+        h('div', { class: 'field' }, file),
+        h('div', { class: 'row' }, btn,
+          h('button', { class: 'btn danger small', type: 'button', text: 'Очистить всё', onclick: async () => {
+            if (!confirm('Удалить все загруженные остатки?')) return;
+            await api('/api/remains', { method: 'DELETE' });
+            load();
+          } })));
+    }
+
+    main.append(h('div', { class: 'card' },
+      head('📦', 'Остатки', 'Маршруты, коробки, КГТ и ШК'),
+      upload, status,
+      h('div', { class: 'grid2' }, carrier, search)), body);
+
+    function draw() {
+      const q = search.value.trim().toLowerCase();
+      const items = data.items.filter((i) => (!carrier.value || i.carrierList.some((c) => c.name === carrier.value))
+        && (!q || String(i.routeId).includes(q) || String(i.parking || '').toLowerCase().includes(q)));
+      const total = (k) => items.reduce((a, i) => a + (i[k] || 0), 0);
+      fill(body,
+        items.length ? h('div', { class: 'row' },
+          h('span', { class: 'pill', text: `Маршрутов: ${items.length}` }),
+          h('span', { class: 'pill', text: `ШК: ${total('shk')}` }),
+          h('span', { class: 'pill', text: `Коробок: ${total('boxes')}` }),
+          h('span', { class: 'pill', text: `КГТ: ${total('kgt')}` })) : h('p', { class: 'muted', text: data.items.length
+          ? 'Ничего не найдено.' : 'Остатки ещё не загружены.' }),
+        h('div', { class: 'remains' }, items.map(remainCard)));
+    }
+
+    async function load() {
+      try {
+        data = await api('/api/remains');
+        const keep = carrier.value;
+        carrier.replaceChildren(h('option', { value: '', text: 'Все перевозчики' }),
+          ...data.carriers.map((c) => h('option', { value: c, text: c, selected: c === keep })));
+        if (data.uploadedAt && !status.firstChild) status.textContent = `Последняя загрузка: ${localTime(data.uploadedAt)}`;
+        draw();
+      } catch (e) { fill(status, msg(e.message)); }
+    }
+    load();
+  }
+
+  function remainCard(i) {
+    const ready = i.shk !== null && i.shkNorm !== null && i.shk >= i.shkNorm;
+    const cell = (label, value) => h('div', { class: 'cell' }, h('div', { class: 'label', text: label }), h('div', { class: 'v', text: value ?? '—' }));
+    return h('div', { class: 'card remain' },
+      h('div', { class: 'title', text: `Маршрут - ${i.routeId}` }),
+      ...i.carrierList.map((c) => h('div', { class: 'small', text: c.name })),
+      h('div', { class: 'small muted', text: i.officeName || '' }),
+      h('div', { class: `shk ${ready ? 'ready' : ''}` }, h('div', { class: 'label', text: 'ШК' }), h('div', { class: 'big', text: i.shk ?? '—' })),
+      h('div', { class: 'cells' }, cell('Коробки', i.boxes), cell('КГТ', i.kgt)),
+      h('div', { class: 'kv small' },
+        h('span', { class: 'muted', text: 'Парковка' }), h('span', { text: i.parking || '—' }),
+        h('span', { class: 'muted', text: 'Норма выезда' }), h('span', { text: i.shkNorm ?? '—' }),
+        i.volume !== null && i.volume !== undefined ? h('span', { class: 'muted', text: 'Объём, л' }) : null,
+        i.volume !== null && i.volume !== undefined ? h('span', { text: Math.round(i.volume) }) : null,
+        i.distance !== null && i.distance !== undefined ? h('span', { class: 'muted', text: 'Дистанция, км' }) : null,
+        i.distance !== null && i.distance !== undefined ? h('span', { text: String(i.distance).replace('.', ',') }) : null,
+        i.arrivalTime ? h('span', { class: 'muted', text: 'Подача ТС' }) : null,
+        i.arrivalTime ? h('span', { text: i.arrivalTime }) : null));
+  }
+
   // ================================================================ Путевые листы
 
   async function renderWaysheets(main) {
@@ -445,6 +538,7 @@
       h('div', { class: 'name', text: t.driverName }),
       h('div', { class: 'small muted' }, 'Номер путевого: ', h('b', { text: `№ ${t.id}` })),
       h('div', {},
+        t.parking ? h('span', { class: 'pill', text: `Парковка ${t.parking}` }) : null,
         t.srcOfficeName ? h('span', { class: 'pill', text: t.srcOfficeName }) : null,
         t.vehicleNumberPlate ? h('span', { class: 'pill', text: t.vehicleNumberPlate }) : null,
         t.cabinetName ? h('span', { class: 'pill', text: t.cabinetName }) : null,
@@ -747,7 +841,7 @@
   const RENDER = {
     reports: renderReports,
     holds: renderHolds,
-    remains: renderNeedsApi('📦', 'Остатки', 'Маршруты, коробки, КГТ и ШК'),
+    remains: renderRemains,
     rating: renderNeedsApi('🏆', 'Рейтинг', 'Рейтинг водителей'),
     waysheets: renderWaysheets,
     summary: renderSummary,
