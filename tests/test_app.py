@@ -242,7 +242,10 @@ class HoldsTest(unittest.TestCase):
         self.assertEqual(calls[0]["date_from"], "2026-09-17T00:00:00+03:00")
         self.assertEqual(calls[1]["page_token"], "tok2")
         self.assertEqual([(i["typeName"], i["amount"], i["waysheetId"], i["day"]) for i in items],
-                         [("Брак", 7200, "5", "2026-09-17"), ("Недоставленные коробки", 67179, "6", "2026-10-02")])
+                         [("Брак", 7200, "5", "2026-09-17"), ("Утеря", 67179, "6", "2026-10-02")])
+        self.assertEqual(items[1]["reason"], "Недоставленные коробки, возвратная коробка: да")
+        self.assertEqual(holds.parse_pretension({**pretension(3, 7, "10", kind=1), "comment": "Претензия по акту 15"})["typeName"],
+                         "Претензия")
         bal = holds.fetch_balance("t", "777", lambda u, t: {"data": {"sum": {"value": "241853.1"},
                                   "sum_available": {"value": "0"}, "sum_fine": {"value": "-18204.68"}, "sum_all": {"value": "1"}}})
         self.assertEqual((bal["sum"], bal["fines"]), (24185310, -1820468))
@@ -666,7 +669,7 @@ class ServerTest(unittest.TestCase):
         emirov = next(d for d in sm["drivers"] if d["driverName"].startswith("Эмиров"))
         petrov = next(d for d in sm["drivers"] if d["driverName"] == "Петров Пётр")
         self.assertEqual((emirov["holds"], emirov["payout"]), (15000, 4567464 - 15000))
-        self.assertEqual((petrov["holds"], petrov["holdsByType"]), (2000, [{"type": "Недоставленные коробки", "sum": 2000}]))
+        self.assertEqual((petrov["holds"], petrov["holdsByType"]), (2000, [{"type": "Утеря", "sum": 2000}]))
         self.assertEqual(emirov["holdsByType"], [{"type": "Брак", "sum": 15000}])
         self.assertEqual((sm["totals"]["holds"], sm["holdsUnmatched"]), (17000, {"count": 1, "sum": 700}))
         self.assertEqual(sm["totals"]["payout"], sum(d["payout"] for d in sm["drivers"]))

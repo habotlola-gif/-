@@ -161,8 +161,12 @@ sleep 2
 if systemctl is-active --quiet $SERVICE; then
   echo
   echo "Готово. Сайт: $SCHEME://$DOMAIN"
-  echo "Откройте его и создайте администратора (первый вход)."
-  echo "Код установки: $(grep '^SETUP_CODE=' "$ENV_FILE" | cut -d= -f2)"
+  if python3 -c "import json,sys; sys.exit(0 if json.load(open('$DATA_DIR/db.json'))['users'] else 1)" 2>/dev/null; then
+    echo "Обновление установлено. Данные, ключи и пароли сохранены."
+  else
+    echo "Откройте его и создайте администратора (первый вход)."
+    echo "Код установки: $(grep '^SETUP_CODE=' "$ENV_FILE" | cut -d= -f2)"
+  fi
   echo "Логи: journalctl -u $SERVICE -f"
 else
   echo "Сайт не запустился. Логи: journalctl -u $SERVICE -n 50" >&2

@@ -14,7 +14,8 @@ BALANCE_URL = "https://drive.wb.ru/client-gateway/api/finance/balance/v2/balance
 PAGE_SIZE = 100
 MAX_PAGES = 200
 
-TYPE_NAMES = {2: "Брак", 3: "Недоставленные коробки"}
+# Как в выгрузке удержаний WB (сверено по сумме и количеству за октябрь 2026).
+TYPE_NAMES = {1: "Претензия", 2: "Брак", 3: "Утеря"}
 
 _WAYSHEET_RE = re.compile(r"Путевой\s+лист\s*(?:№|:)?\s*(\d+)", re.I)
 _REASON_RE = re.compile(r"Путевой\s+лист\s*№?\s*\d+\s*\((.+)\)\s*$", re.I)
@@ -43,6 +44,20 @@ def parse_comment(comment):
     return info
 
 
+def reason_of(info, comment):
+    """Причина для показа: «Сколы/Трещины», «Недоставленные коробки, возвратная коробка: да»…"""
+    if info["reason"]:
+        return info["reason"]
+    parts = [info["kind"]] if info["kind"] else []
+    if info["returnBox"]:
+        parts.append(f"возвратная коробка: {info['returnBox'].lower()}")
+    if parts:
+        return ", ".join(parts)
+    # Комментарий другого вида (например, у претензий) — показываем как есть, без номера путевого.
+    text = _WAYSHEET_RE.sub("", (comment or "")).strip(" ()/-")
+    return text or None
+
+
 def parse_pretension(p):
     info = parse_comment(p.get("comment"))
     type_id = p.get("pret_type_id")
@@ -56,7 +71,7 @@ def parse_pretension(p):
         "amount": kopecks(amount.get("value") if isinstance(amount, dict) else amount),
         "typeId": type_id,
         "typeName": type_name,
-        "reason": info["reason"] or (f"возвратная коробка: {info['returnBox'].lower()}" if info["returnBox"] else None),
+        "reason": reason_of(info, p.get("comment")),
         "comment": p.get("comment") or "",
         "waysheetId": info["waysheetId"],
         "shipDate": info["shipDate"],
