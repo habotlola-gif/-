@@ -350,7 +350,7 @@
           copyBtn.textContent = (await copyText(r.text)) ? 'Скопировано' : 'Не удалось скопировать';
           setTimeout(() => { copyBtn.textContent = 'Копировать отчет'; }, 2000);
         } });
-        fill(body, 
+        fill(body,
           ...r.warnings.map((w) => msg(w, 'warn')),
           h('label', { class: 'row check' },
             h('input', { type: 'checkbox', checked: state.deductHolds, onchange: (e) => {
@@ -662,7 +662,8 @@
     async function load() {
       fill(body, h('div', { class: 'status', text: 'Загружаю…' }));
       try {
-        const r = await api(`/api/summary?${new URLSearchParams({ from: state.period.from, to: state.period.to, percent: pct.value })}`);
+        const r = await api(`/api/summary?${new URLSearchParams({ from: state.period.from, to: state.period.to,
+          percent: pct.value, holds: state.deductHolds ? '1' : '0' })}`);
         const t = r.totals;
         const tbody = h('tbody');
         for (const d of r.drivers) {
@@ -673,27 +674,40 @@
             h('td', { class: 'num', text: rub(d.retention) }),
             h('td', { class: 'num', text: d.fines ? rub(d.fines) : '—' }),
             h('td', { class: 'num', text: d.finesPending ? rub(d.finesPending) : '—' }),
+            h('td', { class: `num ${r.deductHolds ? '' : 'muted'}`, text: d.holds ? rub(d.holds) : '—' }),
             h('td', { class: 'num', text: rub(d.payout) }));
-          const det = h('tr', { hidden: true }, h('td', { colspan: '7' },
+          const det = h('tr', { hidden: true }, h('td', { colspan: '8' },
+            d.holdsByType.length ? h('div', { class: 'small', text: `Удержания WB: ${d.holdsByType.map((x) => `${x.type.toLowerCase()} ${rub(x.sum)}`).join(', ')}` }) : null,
             ...d.trips.map((x) => h('div', { class: 'small muted', text: `№ ${x.id} · ${x.vehicleNumberPlate || ''} · закрыт ${dt(x.closeDt)} · ${rub(x.price)}${x.fine ? ` · штраф ${rub(x.fine)}` : ''}` }))));
           tr.addEventListener('click', () => { det.hidden = !det.hidden; });
           tbody.append(tr, det);
         }
         const csvBtn = h('button', { class: 'btn', type: 'button', text: 'Скачать CSV', onclick: () => downloadCsv(r) });
+        const holdsToggle = h('label', { class: 'row check' },
+          h('input', { type: 'checkbox', checked: state.deductHolds, onchange: (e) => {
+            state.deductHolds = e.target.checked;
+            store.set('deductHolds', state.deductHolds);
+            load();
+          } }),
+          h('span', { text: `Вычитать удержания WB${t.holds ? ` (${rub(t.holds)} ₽)` : ' — за период их нет'}` }));
         fill(body, 
           ...r.warnings.map((w) => msg(w, 'warn')),
+          holdsToggle,
           h('div', { class: 'grid2' },
             h('div', { class: 'stat' }, h('div', { class: 'label', text: 'Сумма' }), h('div', { class: 'value', text: rub(t.sum) })),
             h('div', { class: 'stat' }, h('div', { class: 'label', text: 'Прибыль' }), h('div', { class: 'value', text: rub(t.payout) }))),
           h('div', { class: 'table-wrap' }, h('table', {},
-            h('thead', {}, h('tr', {}, ...['Водитель', 'Рейсов', 'Сумма', 'Удержание', 'Штрафы', 'На рассм.', 'Прибыль']
+            h('thead', {}, h('tr', {}, ...['Водитель', 'Рейсов', 'Сумма', 'Удержание', 'Штрафы', 'На рассм.', 'Удерж. WB', 'Прибыль']
               .map((x, i) => h('th', { class: i ? 'num' : '', text: x })))),
             tbody,
             h('tfoot', {}, h('tr', {},
               h('td', { text: 'Итого' }), h('td', { class: 'num', text: t.tripsCount }), h('td', { class: 'num', text: rub(t.sum) }),
               h('td', { class: 'num', text: rub(t.retention) }), h('td', { class: 'num', text: rub(t.fines) }),
               h('td', { class: 'num', text: rub(t.finesPending) }),
+              h('td', { class: `num ${r.deductHolds ? '' : 'muted'}`, text: rub(t.holds) }),
               h('td', { class: 'num', text: rub(t.payout) }))))),
+          r.holdsUnmatched.count ? h('p', { class: 'small muted', text: `Удержания WB без водителя (путевой не найден): `
+            + `${r.holdsUnmatched.count} шт. на ${rub(r.holdsUnmatched.sum)} ₽ — в ведомость не вошли.` }) : null,
           h('p', { class: 'small muted', text: `В пути (не вошли): ${r.inTransit.length}. Данные WB на ${localTime(r.fetchedAt)}.` }),
           csvBtn);
       } catch (e) { fill(body, msg(e.message)); }
@@ -704,10 +718,11 @@
   function downloadCsv(r) {
     const money = (k) => rub(k).replace(/ /g, '');
     const cell = (v) => { const s = String(v ?? ''); return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-    const lines = [['Водитель', 'ID водителя', 'Рейсов', 'Сумма', 'Удержание', 'Штрафы', 'Прибыль']];
-    for (const d of r.drivers) lines.push([d.driverName, d.driverId ?? '', d.tripsCount, money(d.sum), money(d.retention), money(d.fines), money(d.payout)]);
+    const holdsCol = r.deductHolds ? 'Удержания WB' : 'Удержания WB (не вычтены)';
+    const lines = [['Водитель', 'ID водителя', 'Рейсов', 'Сумма', 'Удержание', 'Штрафы', holdsCol, 'Прибыль']];
+    for (const d of r.drivers) lines.push([d.driverName, d.driverId ?? '', d.tripsCount, money(d.sum), money(d.retention), money(d.fines), money(d.holds), money(d.payout)]);
     const t = r.totals;
-    lines.push(['Итого', '', t.tripsCount, money(t.sum), money(t.retention), money(t.fines), money(t.payout)]);
+    lines.push(['Итого', '', t.tripsCount, money(t.sum), money(t.retention), money(t.fines), money(t.holds), money(t.payout)]);
     const csv = `﻿${lines.map((l) => l.map(cell).join(';')).join('\r\n')}`;
     const a = h('a', { href: URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })), download: `vedomost_${r.from}_${r.to}.csv` });
     document.body.append(a); a.click(); a.remove();

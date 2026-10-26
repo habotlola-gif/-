@@ -450,6 +450,52 @@ class App:
         mine = [i for i in items if i["driverName"] and user_matches(user, i)]
         return mine, at, warnings
 
+    def apply_holds(self, rep, date_from, date_to, deduct_holds, warnings):
+        """Удержания WB в ведомость: по водителю, вычитаются из прибыли, если deduct_holds.
+
+        Водитель с удержаниями, но без закрытых путевых в периоде, добавляется строкой без рейсов.
+        """
+        for r in rep["drivers"]:
+            r.update({"holds": 0, "holdsByType": []})
+        if not self.db.cabinets():
+            return {"deductHolds": deduct_holds, "holdsUnmatched": {"count": 0, "sum": 0}}
+        try:
+            items, _, hw = self.load_holds(date_from, date_to)
+            warnings += hw
+        except WbError as e:
+            warnings.append(f"Удержания WB не загрузились: {e}")
+            items = []
+        rows = rep["drivers"]
+        unmatched = []
+        for h in items:
+            if h["refunded"]:
+                continue
+            if not h["driverName"]:
+                unmatched.append(h)
+                continue
+            row = next((r for r in rows if user_matches({"driverId": r["driverId"], "driverName": r["driverName"]}, h)), None)
+            if row is None:
+                row = {"driverId": h["driverId"], "driverName": h["driverName"], "plates": [], "tripsCount": 0,
+                       "sum": 0, "retention": 0, "fines": 0, "finesPending": 0, "finesByType": [],
+                       "finesByStatus": [], "payout": 0, "hasFineUnderConsideration": False, "trips": [],
+                       "holds": 0, "holdsByType": []}
+                rows.append(row)
+            row["holds"] += h["amount"]
+            t = next((x for x in row["holdsByType"] if x["type"] == h["typeName"]), None)
+            if t is None:
+                row["holdsByType"].append({"type": h["typeName"], "sum": h["amount"]})
+            else:
+                t["sum"] += h["amount"]
+        for r in rows:
+            r["payoutBeforeHolds"] = r["payout"]
+            if deduct_holds:
+                r["payout"] -= r["holds"]
+        rows.sort(key=lambda r: r["driverName"].lower())
+        totals = {k: sum(r[k] for r in rows)
+                  for k in ("tripsCount", "sum", "retention", "fines", "finesPending", "holds", "payout")}
+        return {"drivers": rows, "totals": totals, "deductHolds": deduct_holds,
+                "holdsUnmatched": {"count": len(unmatched), "sum": sum(h["amount"] for h in unmatched)}}
+
     def employee_report(self, user, date_from, date_to, deduct_holds=True):
         """Отчёт водителя. deduct_holds — вычитать удержания WB (переключатель на странице отчёта)."""
         trips, fetched_at, warnings = self.load_trips(date_from, date_to)
@@ -963,6 +1009,8 @@ def make_handler(app):
                 raise bad("BAD_PERCENT", "Процент должен быть от 0 до 100.")
             trips, fetched_at, warnings = app.load_trips(date_from, date_to)
             rep = build_report(trips, date_from, date_to, percent, app.deduct_pending())
+            deduct_holds = (q.get("holds") or ["1"])[0] != "0"
+            rep.update(app.apply_holds(rep, date_from, date_to, deduct_holds, warnings))
             return {**rep, "fetchedAt": fetched_at, "warnings": warnings}
 
         def api_drivers(self, q, _):
