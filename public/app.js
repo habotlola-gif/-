@@ -292,18 +292,42 @@
       h('div', {}, h('h1', { text: title }), sub ? h('p', { text: sub }) : null));
   }
 
+  // Администратор выбирает: себя, сотрудника или любого водителя из WB за период.
   async function employeeSelect(onChange) {
     if (state.me.role !== 'admin') return null;
     const sel = h('select', { class: 'input', onchange: () => { state.employee = sel.value; onChange(); } },
       h('option', { value: '', text: `${state.me.name} (я)` }));
-    try {
-      const { users } = await api('/api/users');
-      for (const u of users) {
-        if (u.id === state.me.id) continue;
-        sel.append(h('option', { value: u.id, text: u.name, selected: u.id === state.employee }));
+    const [usersRes, driversRes] = await Promise.allSettled([
+      api('/api/users'),
+      api(`/api/drivers?${new URLSearchParams({ from: state.period.from, to: state.period.to })}`),
+    ]);
+    if (usersRes.status === 'fulfilled') {
+      const others = usersRes.value.users.filter((u) => u.id !== state.me.id);
+      if (others.length) {
+        sel.append(h('optgroup', { label: 'Сотрудники' },
+          ...others.map((u) => h('option', { value: `u:${u.id}`, text: u.name, selected: `u:${u.id}` === state.employee }))));
       }
-    } catch { /* без списка */ }
+    }
+    if (driversRes.status === 'fulfilled' && driversRes.value.drivers.length) {
+      sel.append(h('optgroup', { label: 'Водители из WB за период' },
+        ...driversRes.value.drivers.map((d) => {
+          const v = `d:${d.driverId || ''}|${d.driverName}`;
+          return h('option', { value: v, text: `${d.driverName} · рейсов ${d.trips}`, selected: v === state.employee });
+        })));
+    }
+    if (![...sel.options].some((o) => o.value === state.employee)) state.employee = '';
+    sel.value = state.employee;
     return h('label', { class: 'field' }, h('span', { text: 'Сотрудник' }), sel);
+  }
+
+  function employeeQuery(q) {
+    const v = state.employee;
+    if (v.startsWith('u:')) q.set('employee', v.slice(2));
+    if (v.startsWith('d:')) {
+      const [id, ...name] = v.slice(2).split('|');
+      q.set('driver', name.join('|'));
+      if (id) q.set('driverId', id);
+    }
   }
 
   // ================================================================ Отчеты
@@ -319,7 +343,7 @@
       fill(body, h('div', { class: 'status', text: 'Загружаю…' }));
       try {
         const q = new URLSearchParams({ from: state.period.from, to: state.period.to });
-        if (state.employee) q.set('employee', state.employee);
+        employeeQuery(q);
         const r = await api(`/api/report?${q}`);
         const copyBtn = h('button', { class: 'btn', type: 'button', text: 'Копировать отчет', onclick: async () => {
           copyBtn.textContent = (await copyText(r.text)) ? 'Скопировано' : 'Не удалось скопировать';
@@ -329,6 +353,10 @@
           ...r.warnings.map((w) => msg(w, 'warn')),
           h('div', { class: 'stat' }, h('div', { class: 'label', text: 'Путевых записей' }), h('div', { class: 'value', text: String(r.tripsCount) })),
           h('div', { class: 'stat' }, h('div', { class: 'label', text: 'К выплате' }), h('div', { class: 'value', text: rub(r.payout) })),
+          !r.tripsCount && !r.inTransit ? msg(state.me.role === 'admin' && !state.employee
+            ? 'За период нет путевых с вашим ФИО. Выберите водителя в списке «Сотрудник» — там есть все водители из WB за этот период.'
+            : `За период нет путевых водителя «${r.employee.driverName || r.employee.name}». Если в WB ФИО записано иначе, `
+              + 'администратор может указать «ФИО в WB» или ID водителя в настройках сотрудника.', 'warn') : null,
           h('div', { class: 'report-text', text: r.text }),
           r.inTransit ? h('p', { class: 'small muted', text: `Ещё в пути (не закрыты, в расчёт не вошли): ${r.inTransit}` }) : null,
           copyBtn,

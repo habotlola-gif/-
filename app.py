@@ -750,6 +750,14 @@ def make_handler(app):
         # ======== данные
         def target_user(self, q):
             u = self.need_user()
+            driver = (q.get("driver") or [""])[0].strip()
+            if driver:
+                # Администратор смотрит отчёт любого водителя из WB, даже не заведённого в сотрудники.
+                if u["role"] != "admin":
+                    raise bad("FORBIDDEN", "Можно смотреть только свои данные.", 403)
+                did = (q.get("driverId") or [""])[0].strip() or None
+                return {"id": None, "name": driver, "driverName": driver, "driverId": did,
+                        "role": "driver", "percent": None}
             uid = (q.get("employee") or [None])[0]
             if uid and uid != u["id"]:
                 if u["role"] != "admin":

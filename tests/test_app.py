@@ -342,6 +342,14 @@ class ServerTest(unittest.TestCase):
         admin_id = self.req(admin, "/api/me")[1]["user"]["id"]
         self.assertEqual(self.req(driver, f"/api/report?from=2026-10-01&to=2026-10-05&employee={admin_id}")[0], 403)
 
+        # Администратор смотрит отчёт водителя из WB, не заведённого в сотрудники; водителю так нельзя.
+        status, r = self.req(admin, "/api/report?from=2026-10-01&to=2026-10-05&driver=" + urllib.parse.quote("Петров Пётр"))
+        self.assertEqual((status, r["tripsCount"], r["sum"], r["fines"]), (200, 1, 50000, 1000))
+        self.assertIn("Зарплата партнера: Петров Пётр", r["text"])
+        status, r = self.req(admin, "/api/report?from=2026-10-01&to=2026-10-05&driver=x&driverId=8")
+        self.assertEqual(r["tripsCount"], 1)
+        self.assertEqual(self.req(driver, "/api/report?from=2026-10-01&to=2026-10-05&driver=" + urllib.parse.quote("Петров Пётр"))[0], 403)
+
         # Удержания водителя — только его штрафы.
         status, f = self.req(driver, "/api/fines?from=2026-10-01&to=2026-10-05")
         self.assertEqual((status, f["total"]), (200, 393425))
