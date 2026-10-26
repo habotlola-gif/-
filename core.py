@@ -487,7 +487,7 @@ def request_json(method, url, body, token, timeout=60):
             raise WbError("KEY_EXPIRED", "Ключ устарел, обновите." + tail, e.code)
         if e.code == 429:
             raise WbError("WB_RATE_LIMIT", "WB ограничил частоту запросов, попробуйте через пару минут.", 429)
-        raise WbError("WB_HTTP", f"Ошибка сервера WB: {e.code}.", e.code)
+        raise WbError("WB_HTTP", f"Ошибка сервера WB: {e.code}.{tail if detail else ''}", e.code)
     except (urllib.error.URLError, TimeoutError, OSError):
         raise WbError("WB_NETWORK", "Нет связи с WB. Проверьте интернет. Если сайт запущен на хостинге, "
                                     "WB может не пускать такие запросы — запустите на домашнем компьютере.")
@@ -508,6 +508,49 @@ def fetch(date_from, date_to, token):
     if not isinstance(data, list):
         raise WbError("WB_FORMAT", "Неожиданный формат ответа WB — возможно, API изменился.")
     return data
+
+
+# Самый длинный период (в днях), который WB принял за этот запуск. WB отвечает 400
+# на слишком длинный период, а предел не документирован — узнаём его по ходу.
+_max_span = {"days": 31}
+
+
+def _days(date_from, date_to):
+    return (date.fromisoformat(date_to) - date.fromisoformat(date_from)).days
+
+
+def fetch_in_chunks(fetcher, date_from, date_to, token):
+    """Путевые за [date_from, date_to): длинный период — кусками, которые WB принимает.
+
+    На ответ 400 кусок делится пополам, пока не станет в один день.
+    """
+    span = _days(date_from, date_to)
+    if span > _max_span["days"]:
+        result, start = [], date_from
+        while start < date_to:
+            end = min(add_days(start, _max_span["days"]), date_to)
+            result += fetch_in_chunks(fetcher, start, end, token)
+            start = end
+        return _unique(result)
+    try:
+        items = fetcher(date_from, date_to, token)
+    except WbError as e:
+        if e.status != 400 or span <= 1:
+            raise
+        _max_span["days"] = max(1, span // 2)
+        return fetch_in_chunks(fetcher, date_from, date_to, token)
+    return items
+
+
+def _unique(items):
+    """Путевые с границы соседних кусков могут прийти дважды."""
+    seen, out = set(), []
+    for t in items:
+        key = t.get("id") if isinstance(t, dict) and t.get("id") is not None else id(t)
+        if key not in seen:
+            seen.add(key)
+            out.append(t)
+    return out
 
 
 class TtlCache:
@@ -583,7 +626,7 @@ class WaysheetCache:
                 raise WbError("NO_KEY", "Ключ WB для этого кабинета не задан. Добавьте его в настройках.")
             with queue:
                 try:
-                    tasks = self.fetcher(date_from, date_to, token)
+                    tasks = fetch_in_chunks(self.fetcher, date_from, date_to, token)
                 except WbError as e:
                     entry["error"] = e
                     raise

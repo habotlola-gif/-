@@ -248,6 +248,31 @@ class HoldsTest(unittest.TestCase):
         self.assertEqual((bal["sum"], bal["fines"]), (24185310, -1820468))
 
 
+class ChunkTest(unittest.TestCase):
+    def test_long_period_split_on_400(self):
+        core._max_span["days"] = 31
+        calls = []
+
+        def fetcher(f, t, tok):
+            calls.append((f, t))
+            if core._days(f, t) > 10:
+                raise core.WbError("WB_HTTP", "Ошибка сервера WB: 400.", 400)
+            return [{"id": f}, {"id": "same"}]
+
+        items = core.fetch_in_chunks(fetcher, "2026-08-17", "2026-10-27", "tok")
+        ok = [c for c in calls if core._days(*c) <= 10]
+        self.assertEqual(ok[0][0], "2026-08-17")
+        self.assertEqual(ok[-1][1], "2026-10-27")
+        for a, b in zip(ok, ok[1:]):
+            self.assertEqual(a[1], b[0])  # куски идут встык, без дыр
+        self.assertEqual(sum(1 for i in items if i["id"] == "same"), 1)
+        self.assertLessEqual(core._max_span["days"], 10)
+        with self.assertRaises(core.WbError):  # другие ошибки не глотаем
+            core.fetch_in_chunks(lambda f, t, tok: (_ for _ in ()).throw(core.WbError("KEY_EXPIRED", "x", 401)),
+                                 "2026-10-01", "2026-10-02", "tok")
+        core._max_span["days"] = 31
+
+
 class KeyTest(unittest.TestCase):
     def test_extract(self):
         jwt = make_jwt(2000000000)
