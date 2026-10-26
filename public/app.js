@@ -112,6 +112,7 @@
     waysheetDate: today(),
     cabinet: store.get('cabinet', ''),
     employee: '',
+    deductHolds: store.get('deductHolds', true),
   };
   const root = document.getElementById('root');
 
@@ -239,7 +240,6 @@
     { id: 'reports', title: 'Отчеты', ico: '📄' },
     { id: 'holds', title: 'Удержания WB', ico: '🧾' },
     { id: 'remains', title: 'Остатки', ico: '📦' },
-    { id: 'rating', title: 'Рейтинг', ico: '🏆' },
     { id: 'waysheets', title: 'Путевые листы', ico: '🗒' },
     { id: 'summary', title: 'Ведомость', ico: '📊', admin: true },
     { id: 'settings', title: 'Настройки', ico: '⚙' },
@@ -334,7 +334,7 @@
 
   async function renderReports(main) {
     const body = h('div');
-    const card = h('div', { class: 'card' }, head('📄', 'Отчеты', 'Период и итог к выплате'));
+    const card = h('div', { class: 'card' }, head('📄', 'Отчеты', 'Период и прибыль'));
     main.append(card);
     const sel = await employeeSelect(load);
     card.append(...[sel, periodField(() => renderApp()), body].filter(Boolean));
@@ -344,6 +344,7 @@
       try {
         const q = new URLSearchParams({ from: state.period.from, to: state.period.to });
         employeeQuery(q);
+        q.set('holds', state.deductHolds ? '1' : '0');
         const r = await api(`/api/report?${q}`);
         const copyBtn = h('button', { class: 'btn', type: 'button', text: 'Копировать отчет', onclick: async () => {
           copyBtn.textContent = (await copyText(r.text)) ? 'Скопировано' : 'Не удалось скопировать';
@@ -351,17 +352,22 @@
         } });
         fill(body, 
           ...r.warnings.map((w) => msg(w, 'warn')),
+          h('label', { class: 'row check' },
+            h('input', { type: 'checkbox', checked: state.deductHolds, onchange: (e) => {
+              state.deductHolds = e.target.checked;
+              store.set('deductHolds', state.deductHolds);
+              load();
+            } }),
+            h('span', { text: `Вычитать удержания WB${r.holds ? ` (${rub(r.holds)} ₽: ${r.holdsByType.map((x) => `${x.type.toLowerCase()} ${rub(x.sum)}`).join(', ')})` : ' — за период их нет'}` })),
           h('div', { class: 'stat' }, h('div', { class: 'label', text: 'Путевых записей' }), h('div', { class: 'value', text: String(r.tripsCount) })),
-          h('div', { class: 'stat' }, h('div', { class: 'label', text: 'К выплате' }), h('div', { class: 'value', text: rub(r.payout) })),
+          h('div', { class: 'stat' }, h('div', { class: 'label', text: 'Прибыль' }), h('div', { class: 'value', text: rub(r.payout) })),
           !r.tripsCount && !r.inTransit ? msg(state.me.role === 'admin' && !state.employee
             ? 'За период нет путевых с вашим ФИО. Выберите водителя в списке «Сотрудник» — там есть все водители из WB за этот период.'
             : `За период нет путевых водителя «${r.employee.driverName || r.employee.name}». Если в WB ФИО записано иначе, `
               + 'администратор может указать «ФИО в WB» или ID водителя в настройках сотрудника.', 'warn') : null,
           h('div', { class: 'report-text', text: r.text }),
           r.inTransit ? h('p', { class: 'small muted', text: `Ещё в пути (не закрыты, в расчёт не вошли): ${r.inTransit}` }) : null,
-          r.holds && !r.deductHolds ? h('p', { class: 'small muted', text: `Удержания WB по путевым водителя за период: ${rub(r.holds)} ₽ `
-            + `(${r.holdsByType.map((x) => `${x.type.toLowerCase()} ${rub(x.sum)}`).join(', ')}). В расчёт не входят — включается в настройках.` }) : null,
-          r.holdsError && r.deductHolds ? msg(`Удержания WB не учтены: ${r.holdsError}`, 'warn') : null,
+          r.holdsError ? msg(`Удержания WB не загрузились: ${r.holdsError}`, 'warn') : null,
           copyBtn,
           r.trips.length ? h('details', {},
             h('summary', { text: 'Путевые в отчёте' }),
@@ -420,9 +426,7 @@
             h('span', { class: 'muted', text: `${t.type} · ${t.count} шт.` }), h('span', { text: rub(t.sum) })))) : null,
         state.me.role === 'admin' && r.unmatched.count ? h('p', { class: 'small muted',
           text: `Не нашёл водителя для ${r.unmatched.count} шт. на ${rub(r.unmatched.sum)} ₽ — путевой старше месяца или из другого кабинета.` }) : null,
-        h('p', { class: 'small muted', text: r.deductHolds
-          ? 'Удержания WB вычитаются из зарплаты водителя (по дате удержания).'
-          : 'Удержания WB в зарплату водителя не входят — только показываются. Включается в настройках.' }),
+        h('p', { class: 'small muted', text: 'В отчёте удержания вычитаются из прибыли (по дате удержания); там же их можно отключить.' }),
         r.count ? h('div', { class: 'field' }, kind) : h('p', { class: 'muted', text: 'За период удержаний нет.' }),
         list);
       draw();
@@ -459,19 +463,6 @@
     } catch (e) {
       fill(body, msg(e.message));
     }
-  }
-
-  // ================================================================ Остатки и Рейтинг
-
-  function renderNeedsApi(ico, title, sub) {
-    return (main) => {
-      main.append(h('div', { class: 'card' },
-        head(ico, title, sub),
-        h('p', { text: 'Для этого раздела нужен ещё один запрос WB — его пока нет в программе.' }),
-        h('p', { class: 'small muted', text: 'Как его достать: откройте этот раздел на ol.wildberries.ru в браузере на компьютере, '
-          + 'нажмите F12 → вкладка Network (Сеть), обновите страницу и найдите запрос с данными. '
-          + 'Пришлите разработчику адрес запроса, тело запроса и пример ответа. Заголовок Authorization (ключ) не присылайте.' })));
-    };
   }
 
   // ================================================================ Остатки
@@ -693,9 +684,9 @@
           ...r.warnings.map((w) => msg(w, 'warn')),
           h('div', { class: 'grid2' },
             h('div', { class: 'stat' }, h('div', { class: 'label', text: 'Сумма' }), h('div', { class: 'value', text: rub(t.sum) })),
-            h('div', { class: 'stat' }, h('div', { class: 'label', text: 'К выплате' }), h('div', { class: 'value', text: rub(t.payout) }))),
+            h('div', { class: 'stat' }, h('div', { class: 'label', text: 'Прибыль' }), h('div', { class: 'value', text: rub(t.payout) }))),
           h('div', { class: 'table-wrap' }, h('table', {},
-            h('thead', {}, h('tr', {}, ...['Водитель', 'Рейсов', 'Сумма', 'Удержание', 'Штрафы', 'На рассм.', 'К выплате']
+            h('thead', {}, h('tr', {}, ...['Водитель', 'Рейсов', 'Сумма', 'Удержание', 'Штрафы', 'На рассм.', 'Прибыль']
               .map((x, i) => h('th', { class: i ? 'num' : '', text: x })))),
             tbody,
             h('tfoot', {}, h('tr', {},
@@ -713,7 +704,7 @@
   function downloadCsv(r) {
     const money = (k) => rub(k).replace(/ /g, '');
     const cell = (v) => { const s = String(v ?? ''); return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-    const lines = [['Водитель', 'ID водителя', 'Рейсов', 'Сумма', 'Удержание', 'Штрафы', 'К выплате']];
+    const lines = [['Водитель', 'ID водителя', 'Рейсов', 'Сумма', 'Удержание', 'Штрафы', 'Прибыль']];
     for (const d of r.drivers) lines.push([d.driverName, d.driverId ?? '', d.tripsCount, money(d.sum), money(d.retention), money(d.fines), money(d.payout)]);
     const t = r.totals;
     lines.push(['Итого', '', t.tripsCount, money(t.sum), money(t.retention), money(t.fines), money(t.payout)]);
@@ -926,21 +917,13 @@
     const out = h('div');
     const pct = h('input', { class: 'input', type: 'number', min: '0', max: '100', step: '0.01' });
     const pending = h('input', { type: 'checkbox' });
-    const holdsBox = h('input', { type: 'checkbox' });
     const minutes = h('input', { class: 'input', type: 'number', min: '0', max: '1440', step: '1' });
     try {
       const s = await api('/api/settings');
       pct.value = s.percent;
       pending.checked = s.deductPending;
       minutes.value = s.remainsMinutes;
-      holdsBox.checked = s.deductHolds;
     } catch { pct.value = 20; pending.checked = true; }
-    holdsBox.addEventListener('change', async () => {
-      try {
-        const s = await api('/api/settings', { method: 'POST', body: { deductHolds: holdsBox.checked } });
-        fill(out, msg(s.deductHolds ? 'Удержания WB вычитаются из зарплаты.' : 'Удержания WB в зарплату не входят.', 'ok'));
-      } catch (e) { fill(out, msg(e.message)); holdsBox.checked = !holdsBox.checked; }
-    });
     pending.addEventListener('change', async () => {
       try {
         const s = await api('/api/settings', { method: 'POST', body: { deductPending: pending.checked } });
@@ -959,8 +942,6 @@
         } })),
       h('label', { class: 'row check' }, pending,
         h('span', { text: 'Вычитать штрафы, которые WB ещё рассматривает' })),
-      h('label', { class: 'row check' }, holdsBox,
-        h('span', { text: 'Вычитать удержания WB (брак, недоставленные коробки) из зарплаты водителя' })),
       h('div', { class: 'label', text: 'Остатки: автообновление, минут' }),
       h('p', { class: 'small muted', text: '0 — выключено, иначе от 5 до 1440.' }),
       h('div', { class: 'row' }, h('div', { class: 'grow' }, minutes),
@@ -996,7 +977,6 @@
     reports: renderReports,
     holds: renderHolds,
     remains: renderRemains,
-    rating: renderNeedsApi('🏆', 'Рейтинг', 'Рейтинг водителей'),
     waysheets: renderWaysheets,
     summary: renderSummary,
     settings: renderSettings,

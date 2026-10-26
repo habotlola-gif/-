@@ -209,7 +209,7 @@ def report_text(name, date_from, date_to, row, percent, deduct_pending=True, hol
     if holds_by_type is not None:
         lines += [f"Удержание WB «{h['type']}» всего {fmt_rub(h['sum'])}" for h in holds_by_type]
         lines.append(f"Минус удержания WB: {fmt_rub(sum(h['sum'] for h in holds_by_type))}")
-    lines.append(f"Итого к выплате водителю: {fmt_rub(row['payout'])}")
+    lines.append(f"Прибыль: {fmt_rub(row['payout'])}")
     return "\n".join(lines)
 
 
@@ -405,9 +405,6 @@ class App:
                 os.replace(tmp, self.index_file())
 
     # --- удержания WB
-    def deduct_holds(self):
-        return bool(self.db.data["settings"].get("deductHolds", False))
-
     def load_holds(self, date_from, date_to):
         """Удержания WB по всем кабинетам за период (по дате удержания), с водителем по номеру путевого."""
         items, fetched, warnings = [], [], []
@@ -453,7 +450,8 @@ class App:
         mine = [i for i in items if i["driverName"] and user_matches(user, i)]
         return mine, at, warnings
 
-    def employee_report(self, user, date_from, date_to):
+    def employee_report(self, user, date_from, date_to, deduct_holds=True):
+        """Отчёт водителя. deduct_holds — вычитать удержания WB (переключатель на странице отчёта)."""
         trips, fetched_at, warnings = self.load_trips(date_from, date_to)
         mine = [{**t, "driverId": "me", "driverName": user["name"]} for t in trips if user_matches(user, t)]
         percent = self.percent_for(user)
@@ -472,7 +470,6 @@ class App:
                 by_type[h["typeName"]] = by_type.get(h["typeName"], 0) + h["amount"]
         holds_by_type = [{"type": k, "sum": v} for k, v in sorted(by_type.items())]
         holds_total = sum(by_type.values())
-        deduct_holds = self.deduct_holds()
         row = rep["drivers"][0] if rep["drivers"] else {
             "tripsCount": 0, "sum": 0, "retention": 0, "fines": 0, "finesPending": 0, "payout": 0,
             "finesByType": [], "finesByStatus": [], "trips": []}
@@ -863,8 +860,7 @@ def make_handler(app):
         def api_settings(self, q, _):
             self.need_user()
             return {"percent": db.data["settings"]["percent"], "deductPending": app.deduct_pending(),
-                    "remainsMinutes": db.data["settings"].get("remainsMinutes", 10),
-                    "deductHolds": app.deduct_holds()}
+                    "remainsMinutes": db.data["settings"].get("remainsMinutes", 10)}
 
         def api_settings_save(self, q, _):
             self.need_admin()
@@ -877,8 +873,6 @@ def make_handler(app):
                 changes["percent"] = p
             if "deductPending" in b:
                 changes["deductPending"] = bool(b["deductPending"])
-            if "deductHolds" in b:
-                changes["deductHolds"] = bool(b["deductHolds"])
             if "remainsMinutes" in b:
                 try:
                     m = int(b["remainsMinutes"])
@@ -915,7 +909,8 @@ def make_handler(app):
         def api_report(self, q, _):
             user = self.target_user(q)
             date_from, date_to = self.period(q)
-            return app.employee_report(user, date_from, date_to)
+            deduct_holds = (q.get("holds") or ["1"])[0] != "0"
+            return app.employee_report(user, date_from, date_to, deduct_holds)
 
         def api_fines(self, q, _):
             """Удержания WB: путевые со штрафами за период."""
@@ -1028,7 +1023,7 @@ def make_handler(app):
                 "groups": list(groups.values()), "byType": sorted(by_type.values(), key=lambda t: -t["sum"]),
                 "total": sum(t["sum"] for t in by_type.values()), "count": len(items),
                 "unmatched": {"count": len(unmatched), "sum": sum(i["amount"] for i in unmatched)},
-                "deductHolds": app.deduct_holds(), "fetchedAt": at, "warnings": warnings,
+                "fetchedAt": at, "warnings": warnings,
             }
             if u["role"] == "admin":
                 result["balances"] = []

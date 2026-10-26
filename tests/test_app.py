@@ -376,7 +376,7 @@ class ServerTest(unittest.TestCase):
         self.assertEqual((r["tripsCount"], r["sum"], r["retention"], r["fines"], r["payout"]),
                          (2, 6201111, 1240222, 393425, 4567464))
         self.assertIn("Минус удержание (20%): 12 402,22", r["text"])
-        self.assertIn("Итого к выплате водителю: 45 674,64", r["text"])
+        self.assertIn("Прибыль: 45 674,64", r["text"])
         self.assertEqual(r["inTransit"], 1)
 
         # Водитель видит только свои путевые и не может смотреть чужие отчёты и настройки.
@@ -565,16 +565,16 @@ class ServerTest(unittest.TestCase):
         status, r = self.req(driver, "/api/holds?from=2026-10-01&to=2026-10-05")
         self.assertEqual((status, r["total"], "balances" in r), (200, 15000, False))
 
-        # По умолчанию удержания в зарплату не входят, только показываются.
+        # По умолчанию удержания вычитаются из прибыли; в отчёте их можно отключить.
         _, rep = self.req(driver, "/api/report?from=2026-10-01&to=2026-10-05")
-        self.assertEqual((rep["holds"], rep["payout"]), (15000, 4567464))
-        self.assertNotIn("Удержание WB", rep["text"])
-        self.req(admin, "/api/settings", "POST", {"deductHolds": True})
-        _, rep = self.req(driver, "/api/report?from=2026-10-01&to=2026-10-05")
-        self.assertEqual(rep["payout"], 4567464 - 15000)
+        self.assertEqual((rep["holds"], rep["payout"]), (15000, 4567464 - 15000))
         self.assertIn("Удержание WB «Брак» всего 150,00", rep["text"])
         self.assertIn("Минус удержания WB: 150,00", rep["text"])
-        self.assertIn("Итого к выплате водителю: 45 524,64", rep["text"])
+        self.assertIn("Прибыль: 45 524,64", rep["text"])
+        _, rep = self.req(driver, "/api/report?from=2026-10-01&to=2026-10-05&holds=0")
+        self.assertEqual((rep["holds"], rep["payout"]), (15000, 4567464))
+        self.assertNotIn("Удержание WB", rep["text"])
+        self.assertIn("Прибыль: 45 674,64", rep["text"])
 
     def test_static(self):
         with urllib.request.urlopen(self.base + "/") as r:

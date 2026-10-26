@@ -152,7 +152,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 14px; margin:
 .grow { flex: 1; }
 .gap-row { margin: 12px 0; gap: 8px; }
 .pill.bad { border-color: var(--bad); color: var(--bad); }
-.check { margin-top: 12px; gap: 8px; cursor: pointer; }
+.check { margin: 0 0 12px; gap: 10px; cursor: pointer; flex-wrap: nowrap; align-items: flex-start; }
 .check input { width: 18px; height: 18px; accent-color: var(--accent); }
 .kv { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; margin-top: 4px; }
 .remains { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
