@@ -667,9 +667,9 @@
     main.append(h('div', { class: 'card' },
       head('📊', 'Ведомость', 'Все водители за период'),
       h('div', { class: 'grid2' }, periodField(() => renderApp()),
-        h('label', { class: 'field' }, h('span', { text: 'Удержание, %' }), pct)),
+        h('label', { class: 'field' }, h('span', { text: 'Комиссия, %' }), pct)),
       h('button', { class: 'btn light', type: 'button', text: 'Рассчитать', onclick: load })), body);
-    try { pct.value = (await api('/api/settings')).percent; } catch { pct.value = 20; }
+    try { pct.value = (await api('/api/settings')).percent; } catch { pct.value = 0; }
 
     async function load() {
       fill(body, h('div', { class: 'status', text: 'Загружаю…' }));
@@ -709,7 +709,7 @@
             h('div', { class: 'stat' }, h('div', { class: 'label', text: 'Сумма' }), h('div', { class: 'value', text: rub(t.sum) })),
             h('div', { class: 'stat' }, h('div', { class: 'label', text: 'Прибыль' }), h('div', { class: 'value', text: rub(t.payout) }))),
           h('div', { class: 'table-wrap' }, h('table', {},
-            h('thead', {}, h('tr', {}, ...['Водитель', 'Рейсов', 'Сумма', 'Удержание', 'Штрафы', 'На рассм.', 'Удерж. WB', 'Прибыль']
+            h('thead', {}, h('tr', {}, ...['Водитель', 'Рейсов', 'Сумма', 'Комиссия', 'Штрафы', 'На рассм.', 'Удерж. WB', 'Прибыль']
               .map((x, i) => h('th', { class: i ? 'num' : '', text: x })))),
             tbody,
             h('tfoot', {}, h('tr', {},
@@ -731,7 +731,7 @@
     const money = (k) => rub(k).replace(/ /g, '');
     const cell = (v) => { const s = String(v ?? ''); return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
     const holdsCol = r.deductHolds ? 'Удержания WB' : 'Удержания WB (не вычтены)';
-    const lines = [['Водитель', 'ID водителя', 'Рейсов', 'Сумма', 'Удержание', 'Штрафы', holdsCol, 'Прибыль']];
+    const lines = [['Водитель', 'ID водителя', 'Рейсов', 'Сумма', 'Комиссия', 'Штрафы', holdsCol, 'Прибыль']];
     for (const d of r.drivers) lines.push([d.driverName, d.driverId ?? '', d.tripsCount, money(d.sum), money(d.retention), money(d.fines), money(d.holds), money(d.payout)]);
     const t = r.totals;
     lines.push(['Итого', '', t.tripsCount, money(t.sum), money(t.retention), money(t.fines), money(t.holds), money(t.payout)]);
@@ -891,7 +891,7 @@
       loadDrivers,
       h('div', { class: 'grid2' },
         h('label', { class: 'field' }, h('span', { text: 'ID водителя WB' }), f.driverId),
-        h('label', { class: 'field' }, h('span', { text: 'Удержание, %' }), f.percent)));
+        h('label', { class: 'field' }, h('span', { text: 'Комиссия, %' }), f.percent)));
     const syncRole = () => {
       cabField.hidden = f.role.value !== 'owner';
       driverFields.hidden = f.role.value !== 'driver';
@@ -941,7 +941,7 @@
               h('label', { class: 'field' }, h('span', { text: 'ФИО в WB' }), dn),
               h('label', { class: 'field' }, h('span', { text: 'ID водителя WB' }), di)) : null,
             h('div', { class: 'grid2' },
-              u.role === 'driver' ? h('label', { class: 'field' }, h('span', { text: 'Удержание, %' }), pc) : null,
+              u.role === 'driver' ? h('label', { class: 'field' }, h('span', { text: 'Комиссия, %' }), pc) : null,
               h('label', { class: 'field' }, h('span', { text: 'Новый пароль' }), pw)),
             h('div', { class: 'row' },
               h('button', { class: 'btn small light', type: 'button', text: 'Сохранить', onclick: async () => {
@@ -975,7 +975,7 @@
       pct.value = s.percent;
       pending.checked = s.deductPending;
       minutes.value = s.remainsMinutes;
-    } catch { pct.value = 20; pending.checked = true; }
+    } catch { pct.value = 0; pending.checked = true; }
     pending.addEventListener('change', async () => {
       try {
         const s = await api('/api/settings', { method: 'POST', body: { deductPending: pending.checked } });
@@ -983,13 +983,13 @@
       } catch (e) { fill(out, msg(e.message)); pending.checked = !pending.checked; }
     });
     box.append(h('div', { class: 'card' },
-      h('div', { class: 'label', text: 'Общее удержание' }),
-      h('p', { class: 'small muted', text: 'Процент от суммы путевых. У сотрудника можно задать свой процент.' }),
+      h('div', { class: 'label', text: 'Комиссия' }),
+      h('p', { class: 'small muted', text: 'Процент от суммы путевых, вычитается до штрафов. 0 — без комиссии. У водителя-пользователя можно задать свой процент.' }),
       h('div', { class: 'row' }, h('div', { class: 'grow' }, pct),
         h('button', { class: 'btn light', type: 'button', text: 'Сохранить', onclick: async () => {
           try {
             const s = await api('/api/settings', { method: 'POST', body: { percent: pct.value } });
-            fill(out, msg(`Удержание: ${s.percent}%.`, 'ok'));
+            fill(out, msg(`Комиссия: ${s.percent}%.`, 'ok'));
           } catch (e) { fill(out, msg(e.message)); }
         } })),
       h('label', { class: 'row check' }, pending,

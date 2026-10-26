@@ -61,7 +61,7 @@ class Db:
         self.dir = Path(data_dir)
         self.file = self.dir / "db.json"
         self.lock = threading.RLock()
-        self.data = {"users": [], "cabinets": [], "settings": {"percent": 20}, "sessions": {}}
+        self.data = {"users": [], "cabinets": [], "settings": {"percent": 0}, "sessions": {}}
         if self.file.exists():
             self.data.update(json.loads(self.file.read_text(encoding="utf-8")))
         self.keys = {}
@@ -205,9 +205,12 @@ def report_text(name, date_from, date_to, row, percent, deduct_pending=True, hol
         f"Период: {ru_date(date_from)} - {ru_date(date_to)}",
         f"Путевых записей: {row['tripsCount']}",
         f"Сумма всех путевых: {fmt_rub(row['sum'])}",
-        f"Минус удержание ({pct}%): {fmt_rub(row['retention'])}",
-        f"После удержания: {fmt_rub(row['sum'] - row['retention'])}",
     ]
+    if percent:  # при нулевой комиссии строки о ней не нужны
+        lines += [
+            f"Минус комиссия ({pct}%): {fmt_rub(row['retention'])}",
+            f"После комиссии: {fmt_rub(row['sum'] - row['retention'])}",
+        ]
     by_type = row.get("finesByType") or []
     # Разбивку по видам пишем, только когда WB прислал виды штрафов.
     if any(f["type"] != NO_TYPE for f in by_type):

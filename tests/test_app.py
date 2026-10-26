@@ -374,6 +374,9 @@ class ServerTest(unittest.TestCase):
         status, _ = self.req(admin, "/api/setup", "POST", {"name": "Админ", "login": "admin", "password": "secret1"})
         self.assertEqual(status, 200)
         jwt = make_jwt(2000000000)
+        # Отчёт из видео посчитан с комиссией 20 % — ставим её явно (по умолчанию 0).
+        self.assertEqual(self.req(admin, "/api/settings")[1]["percent"], 0)
+        self.req(admin, "/api/settings", "POST", {"percent": 20})
         status, cab = self.req(admin, "/api/cabinets", "POST",
                                {"name": "ИП Рахимов Баходур", "value": f"https://ol.wildberries.ru/?bearer={jwt}"})
         self.assertEqual(status, 200)
@@ -400,7 +403,7 @@ class ServerTest(unittest.TestCase):
         self.assertIn(("2026-10-01", "2026-10-06", jwt), self.calls)
         self.assertEqual((r["tripsCount"], r["sum"], r["retention"], r["fines"], r["payout"]),
                          (2, 6201111, 1240222, 393425, 4567464))
-        self.assertIn("Минус удержание (20%): 12 402,22", r["text"])
+        self.assertIn("Минус комиссия (20%): 12 402,22", r["text"])
         self.assertIn("Прибыль: 45 674,64", r["text"])
         self.assertEqual(r["inTransit"], 1)
 
@@ -691,6 +694,15 @@ class ServerTest(unittest.TestCase):
         with anon.open(r) as resp:
             self.assertIn("Secure", resp.headers["Set-Cookie"])
             self.assertIn("HttpOnly", resp.headers["Set-Cookie"])
+
+    def test_zero_commission_hides_lines(self):
+        row = {"tripsCount": 1, "sum": 10000, "retention": 0, "fines": 0, "payout": 10000}
+        text = app.report_text("Иванов", "2026-10-01", "2026-10-01", row, 0)
+        self.assertNotIn("комиссия", text.lower())
+        self.assertIn("Прибыль: 100,00", text)
+        text = app.report_text("Иванов", "2026-10-01", "2026-10-01", {**row, "retention": 2000, "payout": 8000}, 20)
+        self.assertIn("Минус комиссия (20%): 20,00", text)
+        self.assertIn("После комиссии: 80,00", text)
 
     def test_static(self):
         with urllib.request.urlopen(self.base + "/") as r:
