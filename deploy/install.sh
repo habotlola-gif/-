@@ -21,11 +21,13 @@ PORT=3000
 
 DOMAIN="${1:-}"
 if [[ -z "$DOMAIN" ]]; then
-  IP="$(curl -4 -fsS https://api.ipify.org || hostname -I | awk '{print $1}')"
+  # Внешний IP: у сервиса (не дольше 5 секунд), иначе — первый адрес самого сервера.
+  IP="$(curl -4 -fsS -m 5 https://api.ipify.org || true)"
+  [[ -n "$IP" ]] || IP="$(hostname -I | awk '{print $1}')"
   DOMAIN="${IP//./-}.sslip.io"
 fi
 
-echo "==> Пакеты"
+echo "==> Пакеты (несколько минут; на свежем сервере дольше — система сама ставит обновления)"
 apt-get update -qq
 apt-get install -y -qq python3 python3-cryptography curl debian-keyring debian-archive-keyring apt-transport-https gnupg >/dev/null
 if ! command -v caddy >/dev/null; then
