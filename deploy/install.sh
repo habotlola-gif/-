@@ -28,7 +28,14 @@ if [[ -z "$DOMAIN" ]]; then
 fi
 
 echo "==> Пакеты (несколько минут; на свежем сервере дольше — система сама ставит обновления)"
-apt-get update -qq
+# Если зеркало пакетов, которое выставил хостинг, недоступно — переключаемся на зеркало Яндекса.
+apt-get update -qq 2>&1 | tee /tmp/apt-update.log || true
+if grep -qE "Failed to fetch|Could not connect|Unable to connect" /tmp/apt-update.log; then
+  echo "    Зеркало пакетов недоступно, переключаюсь на mirror.yandex.ru"
+  sed -i -E 's#https?://[a-z.]*archive\.ubuntu\.com/ubuntu#http://mirror.yandex.ru/ubuntu#g; s#https?://security\.ubuntu\.com/ubuntu#http://mirror.yandex.ru/ubuntu#g' \
+    /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+  apt-get update -qq
+fi
 apt-get install -y -qq python3 python3-cryptography curl debian-keyring debian-archive-keyring apt-transport-https gnupg >/dev/null
 if ! command -v caddy >/dev/null; then
   curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
@@ -88,12 +95,34 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF
 
-cat > /etc/caddy/Caddyfile <<EOF
+# HTTPS: сертификат от Let's Encrypt, а если он недоступен — от ZeroSSL (Caddy переключается сам,
+# для ZeroSSL нужен e-mail). Если недоступны оба — сайт работает по http.
+reachable() { [[ "$(curl -s -m 15 -o /dev/null -w '%{http_code}' "$1" || true)" != "000" ]]; }
+if reachable https://acme-v02.api.letsencrypt.org/directory || reachable https://acme.zerossl.com/v2/DV90; then
+  SCHEME=https
+  cat > /etc/caddy/Caddyfile <<EOF
+{
+	email ${EMAIL:-admin@$DOMAIN}
+}
+
 $DOMAIN {
 	encode gzip
 	reverse_proxy 127.0.0.1:$PORT
 }
 EOF
+  sed -i 's/^#COOKIE_SECURE=.*/COOKIE_SECURE=1/' "$ENV_FILE"
+else
+  SCHEME=http
+  echo "    !!! Серверы сертификатов недоступны с этого сервера — сайт будет на http (без замка в браузере)."
+  cat > /etc/caddy/Caddyfile <<EOF
+:80 {
+	encode gzip
+	reverse_proxy 127.0.0.1:$PORT
+}
+EOF
+  # Без https браузер не отдаст cookie с флагом Secure — выключаем его.
+  sed -i 's/^COOKIE_SECURE=.*/#COOKIE_SECURE=1/' "$ENV_FILE"
+fi
 
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
   ufw allow 80/tcp >/dev/null
@@ -113,13 +142,13 @@ HTTP="$(curl -s -o /dev/null -w '%{http_code}' -m 20 -X POST \
 case "$HTTP" in
   401) echo "    WB отвечает (401 без ключа — так и должно быть). Похоже, сервер не заблокирован." ;;
   000) echo "    !!! WB не ответил. Возможно, WB блокирует этот хостинг — попробуйте другой." ;;
-  *)   echo "    WB ответил $CODE. Окончательно проверьте, загрузив путевые на сайте." ;;
+  *)   echo "    WB ответил $HTTP. Окончательно проверьте, загрузив путевые на сайте." ;;
 esac
 
 sleep 2
 if systemctl is-active --quiet $SERVICE; then
   echo
-  echo "Готово. Сайт: https://$DOMAIN"
+  echo "Готово. Сайт: $SCHEME://$DOMAIN"
   echo "Откройте его и создайте администратора (первый вход)."
   echo "Код установки: $(grep '^SETUP_CODE=' "$ENV_FILE" | cut -d= -f2)"
   echo "Логи: journalctl -u $SERVICE -f"
