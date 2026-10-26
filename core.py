@@ -467,7 +467,33 @@ def get_json(url, token, timeout=60):
     return request_json("GET", url, None, token, timeout)
 
 
+# Бережём WB: не чаще одного запроса в WB_MIN_GAP секунд на весь сайт, а на «слишком часто» (429)
+# ждём и повторяем, прежде чем показать ошибку.
+WB_MIN_GAP = float(os.environ.get("WB_MIN_GAP") or 1.0)
+RATE_LIMIT_RETRIES = (5, 15)
+_gate = {"lock": threading.Lock(), "last": 0.0}
+
+
+def _wait_turn():
+    with _gate["lock"]:
+        delay = _gate["last"] + WB_MIN_GAP - time.time()
+        if delay > 0:
+            time.sleep(delay)
+        _gate["last"] = time.time()
+
+
 def request_json(method, url, body, token, timeout=60):
+    for attempt in range(len(RATE_LIMIT_RETRIES) + 1):
+        _wait_turn()
+        try:
+            return _request_once(method, url, body, token, timeout)
+        except WbError as e:
+            if e.code != "WB_RATE_LIMIT" or attempt == len(RATE_LIMIT_RETRIES):
+                raise
+            time.sleep(RATE_LIMIT_RETRIES[attempt])
+
+
+def _request_once(method, url, body, token, timeout):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers={
         "Authorization": "Bearer " + token,
@@ -523,26 +549,59 @@ def _days(date_from, date_to):
     return (date.fromisoformat(date_to) - date.fromisoformat(date_from)).days
 
 
-def fetch_in_chunks(fetcher, date_from, date_to, token):
-    """Путевые за [date_from, date_to): длинный период — кусками, которые WB принимает.
+# Куски выровнены по календарю (от фиксированного понедельника), поэтому отчёт, ведомость и
+# удержания за разные, но пересекающиеся периоды запрашивают у WB одни и те же куски,
+# а свежие куски несколько минут берутся из памяти.
+_EPOCH = "2020-01-06"
+CHUNK_TTL = 120
+_chunks = {"lock": threading.Lock(), "items": {}}
 
+
+def _aligned(day, n):
+    return add_days(_EPOCH, (_days(_EPOCH, day) // n) * n)
+
+
+def clear_chunks():
+    with _chunks["lock"]:
+        _chunks["items"].clear()
+
+
+def fetch_in_chunks(fetcher, date_from, date_to, token):
+    """Путевые, покрывающие [date_from, date_to), кусками, которые WB принимает.
+
+    Ответ может захватывать соседние дни — вызывающий код всё равно отбирает путевые по дате.
     Если WB отвечает, что период слишком длинный, кусок делится пополам, пока не станет в один день.
     """
-    span = _days(date_from, date_to)
-    if span > _max_span["days"]:
-        result, start = [], date_from
-        while start < date_to:
-            end = min(add_days(start, _max_span["days"]), date_to)
-            result += fetch_in_chunks(fetcher, start, end, token)
-            start = end
-        return _unique(result)
+    n = _max_span["days"]
+    result, start = [], _aligned(date_from, n)
+    while start < date_to:
+        end = add_days(start, n)
+        result += _fetch_block(fetcher, start, end, token)
+        start = end
+    return _unique(result)
+
+
+def _fetch_block(fetcher, start, end, token):
+    key = (fetcher, hashlib.sha256(token.encode()).hexdigest() if token else "", start, end)
+    now = time.time()
+    with _chunks["lock"]:
+        for k in [k for k, v in _chunks["items"].items() if now - v[0] > CHUNK_TTL]:
+            del _chunks["items"][k]
+        hit = _chunks["items"].get(key)
+    if hit:
+        return hit[1]
+    span = _days(start, end)
     try:
-        items = fetcher(date_from, date_to, token)
+        items = fetcher(start, end, token)
     except WbError as e:
         if not _period_too_long(e) or span <= 1:
             raise
-        _max_span["days"] = max(1, span // 2)
-        return fetch_in_chunks(fetcher, date_from, date_to, token)
+        half = max(1, span // 2)
+        _max_span["days"] = min(_max_span["days"], half)
+        mid = add_days(start, half)
+        return _fetch_block(fetcher, start, mid, token) + _fetch_block(fetcher, mid, end, token)
+    with _chunks["lock"]:
+        _chunks["items"][key] = (time.time(), items)
     return items
 
 
@@ -607,6 +666,7 @@ class WaysheetCache:
         with self.lock:
             for k in [k for k in self.entries if cabinet is None or k[0] == cabinet]:
                 del self.entries[k]
+        clear_chunks()
 
     def get(self, cabinet, token, date_from, date_to):
         key = (cabinet, date_from, date_to)

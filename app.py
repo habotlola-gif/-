@@ -1095,6 +1095,8 @@ def make_handler(app):
             if not valid_date(day) or not db.cabinet(cid):
                 raise bad("BAD_DATE", "Укажите день и кабинет.")
             items, _ = app.cache.get(cid, db.token(cid), day, add_days(day, 1))
+            # WB отдаёт кусок в две недели — оставляем путевые, открытые или закрытые в этот день.
+            items = [t for t in items if isinstance(t, dict) and day in (day_of(t.get("openDt")), day_of(t.get("closeDt")))]
             self.send(200, json.dumps(items, ensure_ascii=False, indent=2).encode(), {
                 "Content-Type": "application/json; charset=utf-8",
                 "Content-Disposition": f'attachment; filename="wb-{day}.json"'})

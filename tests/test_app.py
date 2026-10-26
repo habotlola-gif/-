@@ -250,7 +250,7 @@ class HoldsTest(unittest.TestCase):
 
 class ChunkTest(unittest.TestCase):
     def test_long_period_split_on_400(self):
-        core._max_span["days"] = 31
+        core._max_span["days"] = 14
         calls = []
 
         def fetcher(f, t, tok):
@@ -280,19 +280,54 @@ class ChunkTest(unittest.TestCase):
         core._max_span["days"] = 14
 
     def _check_split(self, fetcher, calls, limit=10):
-
+        core.clear_chunks()
         items = core.fetch_in_chunks(fetcher, "2026-08-17", "2026-10-27", "tok")
-        ok = [c for c in calls if core._days(*c) <= limit]
-        self.assertEqual(ok[0][0], "2026-08-17")
-        self.assertEqual(ok[-1][1], "2026-10-27")
+        ok = sorted(c for c in calls if core._days(*c) <= limit)
+        self.assertLessEqual(ok[0][0], "2026-08-17")   # куски покрывают весь период
+        self.assertGreaterEqual(ok[-1][1], "2026-10-27")
         for a, b in zip(ok, ok[1:]):
-            self.assertEqual(a[1], b[0])  # куски идут встык, без дыр
+            self.assertEqual(a[1], b[0])  # куски идут встык, без дыр и повторов
         self.assertEqual(sum(1 for i in items if i["id"] == "same"), 1)
         self.assertLessEqual(core._max_span["days"], limit)
+
+        # Повторный и пересекающийся период — из памяти, без новых запросов к WB.
+        n = len(calls)
+        core.fetch_in_chunks(fetcher, "2026-09-01", "2026-10-01", "tok")
+        self.assertEqual(len(calls), n)
+
         with self.assertRaises(core.WbError):  # другие ошибки не глотаем
             core.fetch_in_chunks(lambda f, t, tok: (_ for _ in ()).throw(core.WbError("KEY_EXPIRED", "x", 401)),
                                  "2026-10-01", "2026-10-02", "tok")
         core._max_span["days"] = 14
+
+
+class RateLimitTest(unittest.TestCase):
+    def test_retry_on_429_and_gap(self):
+        calls, sleeps = [], []
+        orig_once, orig_sleep, orig_gap = core._request_once, core.time.sleep, core.WB_MIN_GAP
+
+        def once(method, url, body, token, timeout):
+            calls.append(core.time.time())
+            if len(calls) < 3:
+                raise core.WbError("WB_RATE_LIMIT", "WB ограничил частоту запросов", 429)
+            return {"ok": True}
+
+        try:
+            core._request_once = once
+            core.time.sleep = lambda s: sleeps.append(s)
+            self.assertEqual(core.request_json("POST", "u", {}, "t"), {"ok": True})
+            self.assertEqual(len(calls), 3)
+            self.assertIn(5, sleeps)
+            self.assertIn(15, sleeps)
+            calls.clear()
+
+            def always(*a):
+                raise core.WbError("WB_RATE_LIMIT", "x", 429)
+            core._request_once = always
+            with self.assertRaises(core.WbError):
+                core.request_json("POST", "u", {}, "t")
+        finally:
+            core._request_once, core.time.sleep, core.WB_MIN_GAP = orig_once, orig_sleep, orig_gap
 
 
 class KeyTest(unittest.TestCase):
@@ -422,7 +457,10 @@ class ServerTest(unittest.TestCase):
 
         status, r = self.req(driver, "/api/report?from=2026-10-01&to=2026-10-05")
         self.assertEqual(status, 200)
-        self.assertIn(("2026-10-01", "2026-10-06", jwt), self.calls)
+        # Период (по 06.10 не включительно) покрыт выровненными кусками по две недели.
+        self.assertTrue(all(c[2] == jwt and core._days(c[0], c[1]) <= 14 for c in self.calls))
+        self.assertLessEqual(min(c[0] for c in self.calls), "2026-10-01")
+        self.assertGreaterEqual(max(c[1] for c in self.calls), "2026-10-06")
         self.assertEqual((r["tripsCount"], r["sum"], r["retention"], r["fines"], r["payout"]),
                          (2, 6201111, 1240222, 393425, 4567464))
         self.assertIn("Минус комиссия (20%): 12 402,22", r["text"])
