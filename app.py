@@ -22,8 +22,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from holds import fetch_balance, fetch_pretensions
 from remains import RemainsError, fetch_remains, parse_remains
-from core import (NO_TYPE, KeyStore, post_json, WaysheetCache, WbError, add_days, build_report, day_of,
+from core import (NO_TYPE, KeyStore, TtlCache, get_json, post_json, WaysheetCache, WbError, add_days, build_report, day_of,
                   extract_token, fines_summary, key_info, parse_percent, trip_view, valid_date)
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -186,7 +187,7 @@ def fine_type_line(kind, amount):
     return f"Штраф «{kind}» всего {fmt_rub(amount)}"
 
 
-def report_text(name, date_from, date_to, row, percent, deduct_pending=True):
+def report_text(name, date_from, date_to, row, percent, deduct_pending=True, holds_by_type=None):
     pct = f"{percent:g}".replace(".", ",")
     lines = [
         f"Зарплата партнера: {name}",
@@ -204,10 +205,11 @@ def report_text(name, date_from, date_to, row, percent, deduct_pending=True):
     if row.get("finesPending"):
         lines.append(f"В т.ч. на рассмотрении: {fmt_rub(row['finesPending'])}" if deduct_pending
                      else f"Штрафы на рассмотрении (не вычтены): {fmt_rub(row['finesPending'])}")
-    lines += [
-        f"Минус штрафы от путевых: {fmt_rub(row['fines'])}",
-        f"Итого к выплате водителю: {fmt_rub(row['payout'])}",
-    ]
+    lines.append(f"Минус штрафы от путевых: {fmt_rub(row['fines'])}")
+    if holds_by_type is not None:
+        lines += [f"Удержание WB «{h['type']}» всего {fmt_rub(h['sum'])}" for h in holds_by_type]
+        lines.append(f"Минус удержания WB: {fmt_rub(sum(h['sum'] for h in holds_by_type))}")
+    lines.append(f"Итого к выплате водителю: {fmt_rub(row['payout'])}")
     return "\n".join(lines)
 
 
@@ -217,11 +219,16 @@ REMAINS_MIN_GAP = 60  # чаще раза в минуту остатки одн�
 
 
 class App:
-    def __init__(self, data_dir, fetcher=None, post=None):
+    def __init__(self, data_dir, fetcher=None, post=None, get=None):
         self.db = Db(data_dir)
         self.db.migrate_single_key()
         self.cache = WaysheetCache(fetcher)
+        self.wb_cache = TtlCache()
         self.post = post or post_json
+        self.get = get or get_json
+        self.index_lock = threading.Lock()
+        self.index = None  # номер путевого -> водитель, для удержаний
+        self.lookback_tried = {}  # (кабинет, период) -> когда искали ненайденные путевые
         self.login_failures = {}
         self.remains_status = {}  # кабинет -> {"at", "ok", "error", "count"}
         self.remains_locks = {}
@@ -356,6 +363,7 @@ class App:
                 continue
             fetched.append(at)
             trips.extend({**t, "_cabinet": cab["id"], "_cabinetName": cab["name"]} for t in items if isinstance(t, dict))
+            self.remember_waysheets(cab["id"], items)
         if errors and not fetched:
             cab, e = errors[0]
             raise WbError(e.code, f"{cab['name']}: {e}" if len(self.db.cabinets()) > 1 else str(e), e.status)
@@ -364,23 +372,125 @@ class App:
         warnings = [f"{cab['name']}: {e}" for cab, e in errors]
         return trips, (max(fetched) if fetched else None), warnings
 
+    # --- путевой -> водитель (для удержаний, которые знают только номер путевого)
+    def index_file(self):
+        return self.db.dir / "waysheet-index.json"
+
+    def waysheet_index(self):
+        with self.index_lock:
+            if self.index is None:
+                try:
+                    self.index = json.loads(self.index_file().read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    self.index = {}
+            return self.index
+
+    def remember_waysheets(self, cid, items):
+        index = self.waysheet_index()
+        added = False
+        with self.index_lock:
+            for t in items:
+                if not isinstance(t, dict) or t.get("id") is None:
+                    continue
+                wid = str(t["id"])
+                entry = {"driverId": t.get("driverId"), "driverName": t.get("driverName"), "cabinet": cid,
+                         "openDt": t.get("openDt"), "closeDt": t.get("closeDt")}
+                if index.get(wid) != entry:
+                    index[wid] = entry
+                    added = True
+            if added:
+                self.db.dir.mkdir(parents=True, exist_ok=True)
+                tmp = self.index_file().with_suffix(".tmp")
+                tmp.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+                os.replace(tmp, self.index_file())
+
+    # --- удержания WB
+    def deduct_holds(self):
+        return bool(self.db.data["settings"].get("deductHolds", False))
+
+    def load_holds(self, date_from, date_to):
+        """Удержания WB по всем кабинетам за период (по дате удержания), с водителем по номеру путевого."""
+        items, fetched, warnings = [], [], []
+        for cab in self.db.cabinets():
+            cid = cab["id"]
+            token = self.db.service_token(cid)
+            try:
+                if not token:
+                    raise WbError("NO_KEY", "ключ не задан.")
+                for sup in self.supplier_ids(cab):
+                    rows, at = self.wb_cache.get(
+                        ("holds", cid, sup, date_from, date_to),
+                        lambda sup=sup: fetch_pretensions(token, sup, date_from, date_to, self.post))
+                    fetched.append(at)
+                    items += [{**r, "cabinetId": cid, "cabinetName": cab["name"]} for r in rows]
+            except WbError as e:
+                warnings.append(f"{cab['name']}: {e}")
+        if warnings and not fetched and self.db.cabinets():
+            raise WbError("WB_HOLDS", "Удержания не загрузились. " + " ".join(warnings))
+
+        # Путевые, которых ещё нет в справочнике, ищем в WB за месяц до периода.
+        index = self.waysheet_index()
+        missing = {i["cabinetId"] for i in items if i["waysheetId"] and i["waysheetId"] not in index}
+        for cid in missing:
+            key = (cid, date_from, date_to)
+            if time.time() - self.lookback_tried.get(key, 0) < 600:
+                continue
+            self.lookback_tried[key] = time.time()
+            try:
+                self.load_trips(add_days(date_from, -31), date_to, [cid])
+            except WbError as e:
+                warnings.append(f"{self.db.cabinet(cid)['name']}: не удалось найти водителей по путевым ({e})")
+        index = self.waysheet_index()
+        for i in items:
+            w = index.get(i["waysheetId"] or "") or {}
+            i.update({"driverId": w.get("driverId"), "driverName": w.get("driverName"),
+                      "waysheetCloseDt": w.get("closeDt")})
+        items.sort(key=lambda i: str(i["createdAt"]), reverse=True)
+        return items, (max(fetched) if fetched else None), warnings
+
+    def holds_for(self, user, date_from, date_to):
+        items, at, warnings = self.load_holds(date_from, date_to)
+        mine = [i for i in items if i["driverName"] and user_matches(user, i)]
+        return mine, at, warnings
+
     def employee_report(self, user, date_from, date_to):
         trips, fetched_at, warnings = self.load_trips(date_from, date_to)
         mine = [{**t, "driverId": "me", "driverName": user["name"]} for t in trips if user_matches(user, t)]
         percent = self.percent_for(user)
         deduct = self.deduct_pending()
         rep = build_report(mine, date_from, date_to, percent, deduct)
+        holds, holds_by_type, holds_error = [], [], None
+        if self.db.cabinets():
+            try:
+                holds, _, hw = self.holds_for(user, date_from, date_to)
+                warnings = warnings + hw
+            except WbError as e:
+                holds_error = str(e)
+        by_type = {}
+        for h in holds:
+            if not h["refunded"]:
+                by_type[h["typeName"]] = by_type.get(h["typeName"], 0) + h["amount"]
+        holds_by_type = [{"type": k, "sum": v} for k, v in sorted(by_type.items())]
+        holds_total = sum(by_type.values())
+        deduct_holds = self.deduct_holds()
         row = rep["drivers"][0] if rep["drivers"] else {
             "tripsCount": 0, "sum": 0, "retention": 0, "fines": 0, "finesPending": 0, "payout": 0,
             "finesByType": [], "finesByStatus": [], "trips": []}
+        if deduct_holds:
+            row = {**row, "payout": row["payout"] - holds_total}
+        if deduct_holds and holds_error:
+            warnings = warnings + [f"Удержания WB не учтены: {holds_error}"]
         return {
             "employee": public_user(user), "from": date_from, "to": date_to, "percent": percent,
             "tripsCount": row["tripsCount"], "sum": row["sum"], "retention": row["retention"],
             "afterRetention": row["sum"] - row["retention"], "fines": row["fines"], "payout": row["payout"],
+            "holds": holds_total, "holdsByType": holds_by_type, "holdsCount": len(holds),
+            "deductHolds": deduct_holds, "holdsError": holds_error,
             "finesPending": row["finesPending"], "finesByType": row["finesByType"],
             "finesByStatus": row["finesByStatus"], "deductPending": deduct,
             "trips": row["trips"], "inTransit": len(rep["inTransit"]),
-            "text": report_text(user["name"], date_from, date_to, row, percent, deduct),
+            "text": report_text(user["name"], date_from, date_to, row, percent, deduct,
+                                holds_by_type if deduct_holds else None),
             "fetchedAt": fetched_at, "warnings": warnings,
         }
 
@@ -687,6 +797,7 @@ def make_handler(app):
             except RuntimeError as e:
                 raise bad("NO_CRYPTO", str(e), 500)
             app.cache.clear(cid)
+            app.wb_cache.clear()
             app.remains_status.pop(cid, None)
 
         @staticmethod
@@ -752,7 +863,8 @@ def make_handler(app):
         def api_settings(self, q, _):
             self.need_user()
             return {"percent": db.data["settings"]["percent"], "deductPending": app.deduct_pending(),
-                    "remainsMinutes": db.data["settings"].get("remainsMinutes", 10)}
+                    "remainsMinutes": db.data["settings"].get("remainsMinutes", 10),
+                    "deductHolds": app.deduct_holds()}
 
         def api_settings_save(self, q, _):
             self.need_admin()
@@ -765,6 +877,8 @@ def make_handler(app):
                 changes["percent"] = p
             if "deductPending" in b:
                 changes["deductPending"] = bool(b["deductPending"])
+            if "deductHolds" in b:
+                changes["deductHolds"] = bool(b["deductHolds"])
             if "remainsMinutes" in b:
                 try:
                     m = int(b["remainsMinutes"])
@@ -882,6 +996,52 @@ def make_handler(app):
                 "Content-Type": "application/json; charset=utf-8",
                 "Content-Disposition": f'attachment; filename="wb-{day}.json"'})
 
+        # ======== удержания WB
+        def api_holds(self, q, _):
+            u = self.need_user()
+            date_from, date_to = self.period(q)
+            if u["role"] == "admin":
+                items, at, warnings = app.load_holds(date_from, date_to)
+            else:
+                items, at, warnings = app.holds_for(u, date_from, date_to)
+            by_type = {}
+            for i in items:
+                if i["refunded"]:
+                    continue
+                t = by_type.setdefault(i["typeName"], {"type": i["typeName"], "sum": 0, "count": 0})
+                t["sum"] += i["amount"]
+                t["count"] += 1
+            # Как на странице WB: строка = путевой + вид + причина, с количеством штук.
+            groups = {}
+            for i in items:
+                key = (i["waysheetId"], i["typeName"], i["reason"], i["refunded"], i["day"])
+                g = groups.get(key)
+                if not g:
+                    g = groups[key] = {k: i[k] for k in ("waysheetId", "typeName", "reason", "refunded", "day",
+                                                         "createdAt", "driverName", "driverId", "cabinetName",
+                                                         "shipDate", "officeName")}
+                    g.update({"sum": 0, "count": 0})
+                g["sum"] += i["amount"]
+                g["count"] += 1
+            unmatched = [i for i in items if not i["driverName"]]
+            result = {
+                "groups": list(groups.values()), "byType": sorted(by_type.values(), key=lambda t: -t["sum"]),
+                "total": sum(t["sum"] for t in by_type.values()), "count": len(items),
+                "unmatched": {"count": len(unmatched), "sum": sum(i["amount"] for i in unmatched)},
+                "deductHolds": app.deduct_holds(), "fetchedAt": at, "warnings": warnings,
+            }
+            if u["role"] == "admin":
+                result["balances"] = []
+                for cab in db.cabinets():
+                    try:
+                        for sup in cab.get("supplierIds") or []:
+                            bal, _ = app.wb_cache.get(("balance", cab["id"], sup), lambda sup=sup, cab=cab: fetch_balance(
+                                db.service_token(cab["id"]), sup, app.get))
+                            result["balances"].append({"cabinet": cab["name"], **bal})
+                    except WbError as e:
+                        result["warnings"].append(f"{cab['name']}: баланс не загрузился ({e})")
+            return result
+
         # ======== остатки
         def api_remains(self, q, _):
             self.need_user()
@@ -972,6 +1132,7 @@ def make_handler(app):
         ("GET", "/api/summary"): Handler.api_summary,
         ("GET", "/api/drivers"): Handler.api_drivers,
         ("GET", "/api/raw"): Handler.api_raw,
+        ("GET", "/api/holds"): Handler.api_holds,
         ("GET", "/api/remains"): Handler.api_remains,
         ("POST", "/api/remains"): Handler.api_remains_upload,
         ("DELETE", "/api/remains"): Handler.api_remains_clear,

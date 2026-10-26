@@ -460,7 +460,16 @@ def _snippet(raw):
 
 def post_json(url, body, token, timeout=60):
     """POST в API WB Логистики с ключом кабинета; ответ — разобранный JSON."""
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST", headers={
+    return request_json("POST", url, body, token, timeout)
+
+
+def get_json(url, token, timeout=60):
+    return request_json("GET", url, None, token, timeout)
+
+
+def request_json(method, url, body, token, timeout=60):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers={
         "Authorization": "Bearer " + token,
         "Content-Type": "application/json;charset=utf-8",
         "Accept": "application/json, text/plain, */*",
@@ -499,6 +508,38 @@ def fetch(date_from, date_to, token):
     if not isinstance(data, list):
         raise WbError("WB_FORMAT", "Неожиданный формат ответа WB — возможно, API изменился.")
     return data
+
+
+class TtlCache:
+    """Ответы WB на минуту: одинаковые запросы ждут один общий ответ, ошибки тоже кешируются."""
+
+    def __init__(self, ttl=CACHE_TTL):
+        self.ttl = ttl
+        self.lock = threading.Lock()
+        self.entries = {}
+
+    def clear(self, prefix=None):
+        with self.lock:
+            for k in [k for k in self.entries if prefix is None or k[0] == prefix]:
+                del self.entries[k]
+
+    def get(self, key, fn):
+        with self.lock:
+            now = time.time()
+            for k in [k for k, v in self.entries.items() if now - v["at"] > self.ttl]:
+                del self.entries[k]
+            entry = self.entries.setdefault(key, {"at": now, "lock": threading.Lock()})
+        with entry["lock"]:
+            if "result" in entry:
+                return entry["result"]
+            if "error" in entry:
+                raise entry["error"]
+            try:
+                entry["result"] = (fn(), datetime.now(timezone.utc).isoformat())
+            except WbError as e:
+                entry["error"] = e
+                raise
+            return entry["result"]
 
 
 class WaysheetCache:

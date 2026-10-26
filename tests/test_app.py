@@ -58,6 +58,16 @@ def routecar(rid, shk, parking, supplier=("777", "ИП Тестов Тест")):
                          "suppliers": [{"id": supplier[0], "name": supplier[1]}]}}
 
 
+def pretension(pid, waysheet, amount, kind=2, reason="Сколы/Трещины", dt="2026-10-02T10:00:00Z", refund=None):
+    """Строка ответа WB pretensions/page (формат как в настоящем ответе)."""
+    comment = (f"Путевой лист №{waysheet} ({reason})" if kind == 2 else
+               f"Недоставленные коробки / Путевой лист: {waysheet} / Дата отгрузки: 2026-10-01 / Возвратная коробка: Да")
+    return {"pretension_id": str(pid), "shk_id": str(pid * 10), "create_dt": dt, "amount": {"value": str(amount)},
+            "comment": comment, "is_deleted": False, "pret_type_id": kind, "rop_id": "1", "rop_create_dt": dt,
+            "status_id": 3, "office_id": "1", "office_name": "СЦ Тестовый", "rop_refund_dt": refund,
+            "operation_type": "CARRIER_PRETENSION"}
+
+
 def trip(**over):
     t = {"id": 1, "driverName": "Иванов И.", "driverId": 1, "vehicleNumberPlate": "А001АА777",
          "openDt": "2026-10-25T08:00:00", "closeDt": "2026-10-25T18:00:00",
@@ -211,6 +221,33 @@ class RemainsAutoTest(unittest.TestCase):
             remains.fetch_remains("tok", ["777"], lambda u, b, t: {"error": "x"})
 
 
+class HoldsTest(unittest.TestCase):
+    def test_parse_and_pages(self):
+        import holds
+        self.assertEqual(holds.parse_comment("Путевой лист №31246587 (Упаковка - неотъемлемая часть товара нарушена)"),
+                         {"waysheetId": "31246587", "kind": None, "reason": "Упаковка - неотъемлемая часть товара нарушена",
+                          "shipDate": None, "returnBox": None})
+        c = holds.parse_comment("Недоставленные коробки / Путевой лист: 31224066 / Дата отгрузки: 2026-09-13 / Возвратная коробка: Да")
+        self.assertEqual((c["waysheetId"], c["kind"], c["shipDate"], c["returnBox"]),
+                         ("31224066", "Недоставленные коробки", "2026-09-13", "Да"))
+        pages = [{"pretensions": [pretension(1, 5, "72", dt="2026-09-16T23:22:26Z")], "next_page_token": "tok2"},
+                 {"pretensions": [pretension(2, 6, "671.79", kind=3)], "next_page_token": ""}]
+        calls = []
+
+        def post(url, body, token):
+            calls.append(body)
+            return pages[len(calls) - 1]
+
+        items = holds.fetch_pretensions("t", "777", "2026-09-17", "2026-10-26", post)
+        self.assertEqual(calls[0]["date_from"], "2026-09-17T00:00:00+03:00")
+        self.assertEqual(calls[1]["page_token"], "tok2")
+        self.assertEqual([(i["typeName"], i["amount"], i["waysheetId"], i["day"]) for i in items],
+                         [("Брак", 7200, "5", "2026-09-17"), ("Недоставленные коробки", 67179, "6", "2026-10-02")])
+        bal = holds.fetch_balance("t", "777", lambda u, t: {"data": {"sum": {"value": "241853.1"},
+                                  "sum_available": {"value": "0"}, "sum_fine": {"value": "-18204.68"}, "sum_all": {"value": "1"}}})
+        self.assertEqual((bal["sum"], bal["fines"]), (24185310, -1820468))
+
+
 class KeyTest(unittest.TestCase):
     def test_extract(self):
         jwt = make_jwt(2000000000)
@@ -271,7 +308,18 @@ class ServerTest(unittest.TestCase):
                      openDt="2026-10-03T08:00:00", closeDt=None),
             ]
 
-        self.app = app.App(self.dir, fake_fetch)
+        self.holds = []  # удержания, которые «вернёт» WB
+
+        def fake_post(url, body, token):
+            if url.endswith("/pretensions/page"):
+                return {"pretensions": self.holds, "next_page_token": ""}
+            return {"data": [], "meta": {"has_next": False}}
+
+        def fake_get(url, token):
+            return {"data": {"sum": {"value": "100"}, "sum_available": {"value": "0"},
+                             "sum_fine": {"value": "-5.5"}, "sum_all": {"value": "105.5"}}}
+
+        self.app = app.App(self.dir, fake_fetch, fake_post, fake_get)
         self.server = app.make_server("127.0.0.1", 0, self.app)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -324,7 +372,7 @@ class ServerTest(unittest.TestCase):
 
         status, r = self.req(driver, "/api/report?from=2026-10-01&to=2026-10-05")
         self.assertEqual(status, 200)
-        self.assertEqual(self.calls[-1], ("2026-10-01", "2026-10-06", jwt))
+        self.assertIn(("2026-10-01", "2026-10-06", jwt), self.calls)
         self.assertEqual((r["tripsCount"], r["sum"], r["retention"], r["fines"], r["payout"]),
                          (2, 6201111, 1240222, 393425, 4567464))
         self.assertIn("Минус удержание (20%): 12 402,22", r["text"])
@@ -496,6 +544,37 @@ class ServerTest(unittest.TestCase):
 
         self.assertEqual(self.req(admin, "/api/settings", "POST", {"remainsMinutes": 2})[0], 400)
         self.assertEqual(self.req(admin, "/api/settings", "POST", {"remainsMinutes": 15})[1]["remainsMinutes"], 15)
+
+    def test_holds(self):
+        admin, cid, _ = self.setup_admin()
+        self.req(admin, f"/api/cabinets/{cid}", "PUT", {"supplierIds": "777"})
+        # 11, 12 — путевые Эмирова, 14 — Петрова, 99 — неизвестный путевой.
+        self.holds = [pretension(1, 11, "100"), pretension(2, 11, "50"), pretension(3, 14, "20", kind=3),
+                      pretension(4, 99, "7"), pretension(5, 12, "30", refund="2026-10-04T00:00:00Z")]
+        status, r = self.req(admin, "/api/holds?from=2026-10-01&to=2026-10-05")
+        self.assertEqual(status, 200)
+        self.assertEqual(r["total"], 17700)  # возвращённое (5) не считается
+        self.assertEqual(r["unmatched"], {"count": 1, "sum": 700})
+        g = next(x for x in r["groups"] if x["waysheetId"] == "11")
+        self.assertEqual((g["count"], g["sum"], g["driverName"], g["typeName"]), (2, 15000, "Эмиров Нурали Ханахмедович", "Брак"))
+        self.assertEqual(r["balances"][0]["fines"], -550)
+
+        self.req(admin, "/api/users", "POST", {"name": "Эмиров Нурали Ханахмедович", "login": "emirov", "password": "pass123"})
+        driver = self.client()
+        self.req(driver, "/api/login", "POST", {"login": "emirov", "password": "pass123"})
+        status, r = self.req(driver, "/api/holds?from=2026-10-01&to=2026-10-05")
+        self.assertEqual((status, r["total"], "balances" in r), (200, 15000, False))
+
+        # По умолчанию удержания в зарплату не входят, только показываются.
+        _, rep = self.req(driver, "/api/report?from=2026-10-01&to=2026-10-05")
+        self.assertEqual((rep["holds"], rep["payout"]), (15000, 4567464))
+        self.assertNotIn("Удержание WB", rep["text"])
+        self.req(admin, "/api/settings", "POST", {"deductHolds": True})
+        _, rep = self.req(driver, "/api/report?from=2026-10-01&to=2026-10-05")
+        self.assertEqual(rep["payout"], 4567464 - 15000)
+        self.assertIn("Удержание WB «Брак» всего 150,00", rep["text"])
+        self.assertIn("Минус удержания WB: 150,00", rep["text"])
+        self.assertIn("Итого к выплате водителю: 45 524,64", rep["text"])
 
     def test_static(self):
         with urllib.request.urlopen(self.base + "/") as r:

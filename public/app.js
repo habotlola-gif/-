@@ -359,6 +359,9 @@
               + 'администратор может указать «ФИО в WB» или ID водителя в настройках сотрудника.', 'warn') : null,
           h('div', { class: 'report-text', text: r.text }),
           r.inTransit ? h('p', { class: 'small muted', text: `Ещё в пути (не закрыты, в расчёт не вошли): ${r.inTransit}` }) : null,
+          r.holds && !r.deductHolds ? h('p', { class: 'small muted', text: `Удержания WB по путевым водителя за период: ${rub(r.holds)} ₽ `
+            + `(${r.holdsByType.map((x) => `${x.type.toLowerCase()} ${rub(x.sum)}`).join(', ')}). В расчёт не входят — включается в настройках.` }) : null,
+          r.holdsError && r.deductHolds ? msg(`Удержания WB не учтены: ${r.holdsError}`, 'warn') : null,
           copyBtn,
           r.trips.length ? h('details', {},
             h('summary', { text: 'Путевые в отчёте' }),
@@ -376,10 +379,61 @@
   // ================================================================ Удержания WB
 
   async function renderHolds(main) {
-    const body = h('div');
+    const tab = state.holdsTab || 'wb';
+    const content = h('div');
     main.append(h('div', { class: 'card' },
-      head('🧾', 'Удержания WB', 'Штрафы по путевым листам'),
-      periodField(() => renderApp()), body));
+      head('🧾', 'Удержания WB', tab === 'wb' ? 'Брак, недоставленные коробки и другие' : 'Штрафы по путевым листам'),
+      periodField(() => renderApp()),
+      h('div', { class: 'row' },
+        h('button', { class: `btn small ${tab === 'wb' ? 'active' : ''}`, type: 'button', text: 'Удержания WB',
+          onclick: () => { state.holdsTab = 'wb'; renderApp(); } }),
+        h('button', { class: `btn small ${tab === 'trips' ? 'active' : ''}`, type: 'button', text: 'Штрафы по путевым',
+          onclick: () => { state.holdsTab = 'trips'; renderApp(); } })),
+      content));
+    if (tab === 'trips') return renderTripFines(content);
+
+    fill(content, h('div', { class: 'status', text: 'Загружаю удержания из WB…' }));
+    try {
+      const r = await api(`/api/holds?${new URLSearchParams({ from: state.period.from, to: state.period.to })}`);
+      const kind = h('select', { class: 'input', onchange: () => draw() }, h('option', { value: '', text: 'Все типы' }),
+        ...r.byType.map((t) => h('option', { value: t.type, text: t.type })));
+      const list = h('div');
+      const draw = () => fill(list, r.groups.filter((g) => !kind.value || g.typeName === kind.value).map((g) => h('div', { class: 'list-item' },
+        h('div', { class: 'row between' },
+          h('span', {}, h('span', { class: 'pill warn', text: g.typeName }), g.refunded ? h('span', { class: 'pill', text: 'возвращено' }) : null),
+          h('span', { class: 'num' }, h('b', { text: `${rub(g.sum)} ₽` }), h('div', { class: 'small muted', text: `${g.count} шт.` }))),
+        h('div', { text: `Путевой лист №${g.waysheetId || '—'}${g.reason ? ` (${g.reason})` : ''}` }),
+        h('div', { class: 'small muted', text: [state.me.role === 'admin' ? (g.driverName || 'водитель не найден') : null,
+          ruDate(g.day), g.cabinetName].filter(Boolean).join(' · ') }))));
+      fill(content,
+        ...r.warnings.map((w) => msg(w, 'warn')),
+        h('div', { class: 'stat' }, h('div', { class: 'label', text: 'Сумма удержаний' }), h('div', { class: 'value', text: rub(r.total) })),
+        ...(r.balances || []).map((b) => h('div', { class: 'list-item small' },
+          h('div', { class: 'label', text: `Баланс · ${b.cabinet}` }),
+          h('div', { class: 'kv' },
+            h('span', { class: 'muted', text: 'Баланс' }), h('span', { text: `${rub(b.sum)} ₽` }),
+            h('span', { class: 'muted', text: 'Доступно' }), h('span', { text: `${rub(b.available)} ₽` }),
+            h('span', { class: 'muted', text: 'Штрафы' }), h('span', { text: `${rub(b.fines)} ₽` }),
+            h('span', { class: 'muted', text: 'Всего' }), h('span', { text: `${rub(b.all)} ₽` })))),
+        r.byType.length ? h('div', { class: 'list-item' }, h('div', { class: 'label', text: 'По типу' }),
+          ...r.byType.map((t) => h('div', { class: 'small kv' },
+            h('span', { class: 'muted', text: `${t.type} · ${t.count} шт.` }), h('span', { text: rub(t.sum) })))) : null,
+        state.me.role === 'admin' && r.unmatched.count ? h('p', { class: 'small muted',
+          text: `Не нашёл водителя для ${r.unmatched.count} шт. на ${rub(r.unmatched.sum)} ₽ — путевой старше месяца или из другого кабинета.` }) : null,
+        h('p', { class: 'small muted', text: r.deductHolds
+          ? 'Удержания WB вычитаются из зарплаты водителя (по дате удержания).'
+          : 'Удержания WB в зарплату водителя не входят — только показываются. Включается в настройках.' }),
+        r.count ? h('div', { class: 'field' }, kind) : h('p', { class: 'muted', text: 'За период удержаний нет.' }),
+        list);
+      draw();
+    } catch (e) {
+      fill(content, msg(e.message));
+    }
+  }
+
+  async function renderTripFines(main) {
+    const body = h('div');
+    main.append(body);
     body.append(h('div', { class: 'status', text: 'Загружаю…' }));
     try {
       const q = new URLSearchParams({ from: state.period.from, to: state.period.to });
@@ -872,13 +926,21 @@
     const out = h('div');
     const pct = h('input', { class: 'input', type: 'number', min: '0', max: '100', step: '0.01' });
     const pending = h('input', { type: 'checkbox' });
+    const holdsBox = h('input', { type: 'checkbox' });
     const minutes = h('input', { class: 'input', type: 'number', min: '0', max: '1440', step: '1' });
     try {
       const s = await api('/api/settings');
       pct.value = s.percent;
       pending.checked = s.deductPending;
       minutes.value = s.remainsMinutes;
+      holdsBox.checked = s.deductHolds;
     } catch { pct.value = 20; pending.checked = true; }
+    holdsBox.addEventListener('change', async () => {
+      try {
+        const s = await api('/api/settings', { method: 'POST', body: { deductHolds: holdsBox.checked } });
+        fill(out, msg(s.deductHolds ? 'Удержания WB вычитаются из зарплаты.' : 'Удержания WB в зарплату не входят.', 'ok'));
+      } catch (e) { fill(out, msg(e.message)); holdsBox.checked = !holdsBox.checked; }
+    });
     pending.addEventListener('change', async () => {
       try {
         const s = await api('/api/settings', { method: 'POST', body: { deductPending: pending.checked } });
@@ -897,6 +959,8 @@
         } })),
       h('label', { class: 'row check' }, pending,
         h('span', { text: 'Вычитать штрафы, которые WB ещё рассматривает' })),
+      h('label', { class: 'row check' }, holdsBox,
+        h('span', { text: 'Вычитать удержания WB (брак, недоставленные коробки) из зарплаты водителя' })),
       h('div', { class: 'label', text: 'Остатки: автообновление, минут' }),
       h('p', { class: 'small muted', text: '0 — выключено, иначе от 5 до 1440.' }),
       h('div', { class: 'row' }, h('div', { class: 'grow' }, minutes),
