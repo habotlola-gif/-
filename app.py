@@ -1,466 +1,242 @@
-"""Сайт расчёта зарплаты водителей по данным WB Логистики.
+"""LogisticaWB — зарплата водителей по данным WB Логистики.
 
 Запуск:  python app.py   (или двойной щелчок по start.bat)
 Нужен только Python 3.9+, сторонние пакеты на Windows не нужны.
 
-Формула (как в приложении):
-    после удержания = сумма заданий - 20%
-    водителю = после удержания - штрафы
-Все суммы считаются в копейках, целыми числами.
+При первом запуске сайт попросит создать администратора. Администратор
+добавляет кабинеты (ИП) с ключами WB и сотрудников; водитель входит под своим
+логином и видит только свои путевые листы и отчёты.
 """
-import base64
 import hashlib
 import hmac
 import json
 import os
 import re
+import secrets
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 import webbrowser
-from datetime import date, datetime, timedelta, timezone
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+from core import (KeyStore, WaysheetCache, WbError, add_days, build_report, day_of,
+                  extract_token, key_info, parse_percent, trip_view, valid_date)
 
 BASE_DIR = Path(__file__).resolve().parent
 PUBLIC_DIR = BASE_DIR / "public"
 DATA_DIR = Path(os.environ.get("DATA_DIR") or BASE_DIR / "data").resolve()
 PORT = int(os.environ.get("PORT") or 3000)
 HOST = os.environ.get("HOST") or "127.0.0.1"
-APP_PASSWORD = os.environ.get("APP_PASSWORD") or ""
-# Москва живёт по UTC+3 без перехода на летнее время.
-REPORT_TZ = timezone(timedelta(hours=float(os.environ.get("TZ_OFFSET_HOURS") or 3)))
-CACHE_TTL = 60
 MAX_PERIOD_DAYS = 93
-
-URL = ("https://logistics.wb.ru/waysheets-netcore-service/api/v1/waysheet/"
-       "external/receive-by-period")
-
-
-# ---------------------------------------------------------------- деньги
-
-def _parse_kopecks(v):
-    if v is None or v == "" or isinstance(v, bool):
-        return None
-    s = re.sub(r"[\s\u00a0\u202f₽]", "", str(v)).replace(",", ".")
-    try:
-        d = Decimal(s)
-    except InvalidOperation:
-        return None
-    if not d.is_finite():
-        return None
-    return int((d * 100).quantize(Decimal(1), ROUND_HALF_UP))
+SESSION_TTL = 30 * 86400
+COOKIE = "sid"
 
 
-def kopecks(v):
-    """Копейки из поля: null, число, строка или {'parsedValue': ..., 'source': ...}."""
-    if isinstance(v, dict):
-        for field in ("parsedValue", "source", "value"):
-            k = _parse_kopecks(v.get(field))
-            if k is not None:
-                return k
-        return 0
-    k = _parse_kopecks(v)
-    return 0 if k is None else k
+# ---------------------------------------------------------------- хранилище
+
+def hash_password(password, salt=None):
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 200_000).hex()
+    return salt, digest
 
 
-def percent_of(kop, percent):
-    """Процент от суммы в копейках, округлённый до копейки."""
-    return int((Decimal(kop) * Decimal(str(percent)) / 100).quantize(Decimal(1), ROUND_HALF_UP))
+def check_password(user, password):
+    _, digest = hash_password(password, user["salt"])
+    return hmac.compare_digest(digest, user["hash"])
 
 
-def parse_percent(v):
-    try:
-        p = Decimal(str(v).replace(",", "."))
-    except InvalidOperation:
-        return None
-    if not p.is_finite() or p < 0 or p > 100:
-        return None
-    return float(p.quantize(Decimal("0.01"), ROUND_HALF_UP))
+def norm_name(s):
+    return " ".join(str(s or "").replace("ё", "е").replace("Ё", "Е").split()).casefold()
 
 
-# ---------------------------------------------------------------- даты
+class Db:
+    """Пользователи, кабинеты, настройки и сессии в data/db.json."""
 
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-OFFSET_RE = re.compile(r"(Z|[+-]\d{2}:?\d{2})$", re.I)
-
-
-def valid_date(s):
-    if not isinstance(s, str) or not DATE_RE.match(s):
-        return False
-    try:
-        date.fromisoformat(s)
-        return True
-    except ValueError:
-        return False
-
-
-def add_days(s, n):
-    return (date.fromisoformat(s) + timedelta(days=n)).isoformat()
-
-
-def day_of(dt):
-    """Календарный день метки времени. Без смещения — как есть (время WB московское)."""
-    if not dt or not isinstance(dt, str):
-        return None
-    s = dt.strip()
-    if not OFFSET_RE.search(s):
-        return s[:10] if DATE_RE.match(s[:10]) else None
-    try:
-        iso = s[:-1] + "+00:00" if s[-1] in "zZ" else s
-        # fromisoformat в старых Python не понимает больше 6 знаков дробной части
-        iso = re.sub(r"(\.\d{6})\d+", r"\1", iso)
-        return datetime.fromisoformat(iso).astimezone(REPORT_TZ).date().isoformat()
-    except ValueError:
-        return None
-
-
-# ---------------------------------------------------------------- расчёт
-
-def parse_route(name):
-    """«Склад А (123), ПВЗ Б (456)» → [{name, id}]"""
-    if not name or not isinstance(name, str):
-        return []
-    points = []
-    for part in name.split(", "):
-        m = re.match(r"^(.*?)\s*\((\d+)\)\s*$", part.strip())
-        points.append({"name": m.group(1), "id": m.group(2)} if m else {"name": part.strip(), "id": None})
-    return [p for p in points if p["name"] or p["id"]]
-
-
-def trip_view(t):
-    ret = t.get("totalSumReturn")
-    return {
-        "id": t.get("id"),
-        "openDt": t.get("openDt"),
-        "closeDt": t.get("closeDt"),
-        "vehicleNumberPlate": t.get("vehicleNumberPlate") or "",
-        "price": kopecks(t.get("totalPrice")),
-        "fine": kopecks(t.get("fineSum")),
-        "isFine": bool(t.get("isFine")),
-        "isFineUnderConsideration": bool(t.get("isFineUnderConsideration")),
-        "isApproved": t.get("isApproved"),
-        "shksCount": t.get("shksCount"),
-        "boxCountTotal": t.get("boxCountTotal"),
-        "boxCountDelivered": t.get("boxCountDelivered"),
-        "planMileage": t.get("planMileage"),
-        "totalSumReturn": None if ret is None else kopecks(ret),
-        "logRouteId": t.get("logRouteId"),
-        "logRouteName": t.get("logRouteName") or "",
-        "routePoints": parse_route(t.get("logRouteName")),
-        "srcOfficeName": t.get("srcOfficeName") or "",
-    }
-
-
-def build_report(tasks, date_from, date_to, percent):
-    drivers = {}
-    in_transit = []
-    skipped_outside = skipped_deleted = 0
-
-    for t in tasks if isinstance(tasks, list) else []:
-        if not isinstance(t, dict):
-            continue
-        if t.get("isDeleted") is True:
-            skipped_deleted += 1
-            continue
-        # Закрытые — по дате закрытия, незакрытые — по дате выезда.
-        day = day_of(t.get("closeDt") or t.get("openDt"))
-        if not day or day < date_from or day > date_to:
-            skipped_outside += 1
-            continue
-        if not t.get("closeDt"):
-            in_transit.append({**trip_view(t), "driverName": t.get("driverName") or "—",
-                               "driverId": t.get("driverId")})
-            continue
-        did = t.get("driverId")
-        key = f"id:{did}" if did not in (None, "") else f"name:{t.get('driverName') or '—'}"
-        d = drivers.setdefault(key, {"driverId": did, "driverName": t.get("driverName") or "—",
-                                     "plates": [], "trips": []})
-        plate = t.get("vehicleNumberPlate")
-        if plate and plate not in d["plates"]:
-            d["plates"].append(plate)
-        d["trips"].append(trip_view(t))
-
-    rows = []
-    for d in drivers.values():
-        d["trips"].sort(key=lambda x: str(x["closeDt"]))
-        total = sum(x["price"] for x in d["trips"])
-        fines = sum(x["fine"] for x in d["trips"])
-        hold = percent_of(total, percent)  # округление по каждому водителю
-        rows.append({
-            "driverId": d["driverId"], "driverName": d["driverName"], "plates": d["plates"],
-            "tripsCount": len(d["trips"]), "sum": total, "retention": hold, "fines": fines,
-            "payout": total - hold - fines,
-            "hasFineUnderConsideration": any(x["isFineUnderConsideration"] for x in d["trips"]),
-            "trips": d["trips"],
-        })
-    rows.sort(key=lambda r: r["driverName"].lower())
-    in_transit.sort(key=lambda x: str(x["openDt"]))
-
-    # Итог — сумма уже округлённых значений по водителям.
-    totals = {k: sum(r[k] for r in rows) for k in ("tripsCount", "sum", "retention", "fines", "payout")}
-    return {
-        "from": date_from, "to": date_to, "percent": percent,
-        "drivers": rows, "totals": totals, "inTransit": in_transit,
-        "stats": {"received": len(tasks) if isinstance(tasks, list) else 0,
-                  "skippedOutside": skipped_outside, "skippedDeleted": skipped_deleted},
-    }
-
-
-# ---------------------------------------------------------------- ключ
-
-JWT_RE = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$")
-
-
-def extract_token(text):
-    """Ключ из адреса страницы ol.wildberries.ru (bearer=...), строки 'Bearer ...' или сам ключ."""
-    if not isinstance(text, str):
-        return None
-    s = text.strip()
-    m = re.search(r"(?:^|[?&#])bearer=([^&#\s]+)", s, re.I)
-    if m:
-        from urllib.parse import unquote
-        s = unquote(m.group(1))
-    s = re.sub(r"^bearer\s+", "", s, flags=re.I).strip()
-    return s if JWT_RE.match(s) else None
-
-
-def jwt_payload(token):
-    try:
-        part = token.split(".")[1]
-        return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
-    except (ValueError, IndexError):
-        return None
-
-
-def key_info(token, now=None):
-    """Что можно показать в браузере — без самого ключа."""
-    if not token:
-        return {"configured": False}
-    now = time.time() if now is None else now
-    p = jwt_payload(token) or {}
-    exp = p.get("exp") if isinstance(p.get("exp"), (int, float)) else None
-    return {
-        "configured": True,
-        "expiresAt": datetime.fromtimestamp(exp, timezone.utc).isoformat() if exp else None,
-        "expired": bool(exp and exp <= now),
-        "daysLeft": int((exp - now) // 86400) if exp else None,
-    }
-
-
-class KeyStore:
-    """Ключ WB на диске только в зашифрованном виде.
-
-    Windows: DPAPI — расшифровать может только эта учётная запись Windows,
-    ничего ставить не нужно. Другие системы: AES-GCM из пакета cryptography,
-    мастер-ключ из WB_KEY_SECRET или data/master.key.
-    """
-
-    def __init__(self, data_dir, secret=None):
+    def __init__(self, data_dir):
         self.dir = Path(data_dir)
-        self.file = self.dir / "wb-key.enc"
-        self.secret = secret if secret is not None else os.environ.get("WB_KEY_SECRET")
-        self._cached = ...
-
-    # --- Windows DPAPI
-    @staticmethod
-    def _dpapi(data, protect):
-        import ctypes
-        from ctypes import wintypes
-
-        class BLOB(ctypes.Structure):
-            _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
-
-        buf = ctypes.create_string_buffer(data, len(data))
-        blob_in = BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
-        blob_out = BLOB()
-        fn = ctypes.windll.crypt32.CryptProtectData if protect else ctypes.windll.crypt32.CryptUnprotectData
-        if not fn(ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)):
-            raise OSError("DPAPI: не удалось обработать ключ")
-        try:
-            return ctypes.string_at(blob_out.pbData, blob_out.cbData)
-        finally:
-            ctypes.windll.kernel32.LocalFree(blob_out.pbData)
-
-    # --- AES-GCM
-    def _master_key(self):
-        if self.secret:
-            return hashlib.scrypt(self.secret.encode(), salt=b"wb-driver-salary/v1", n=2 ** 14, r=8, p=1, dklen=32)
-        f = self.dir / "master.key"
-        if f.exists():
-            k = base64.b64decode(f.read_text().strip())
-            if len(k) == 32:
-                return k
-        k = os.urandom(32)
-        f.write_text(base64.b64encode(k).decode())
-        os.chmod(f, 0o600)
-        return k
-
-    def _use_dpapi(self):
-        return sys.platform == "win32" and not self.secret
-
-    def save(self, token):
-        self.dir.mkdir(parents=True, exist_ok=True)
-        if self._use_dpapi():
-            payload = {"v": 1, "alg": "dpapi", "data": base64.b64encode(self._dpapi(token.encode(), True)).decode()}
-        else:
-            try:
-                from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-            except ImportError:
-                raise RuntimeError("Для шифрования ключа установите пакет: pip install cryptography")
-            iv = os.urandom(12)
-            data = AESGCM(self._master_key()).encrypt(iv, token.encode(), None)
-            payload = {"v": 1, "alg": "aes-256-gcm", "iv": base64.b64encode(iv).decode(),
-                       "data": base64.b64encode(data).decode()}
-        tmp = self.file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload))
-        if sys.platform != "win32":
-            os.chmod(tmp, 0o600)
-        os.replace(tmp, self.file)
-        self._cached = token
-
-    def load(self):
-        if self._cached is not ...:
-            return self._cached
-        if not self.file.exists():
-            self._cached = None
-            return None
-        payload = json.loads(self.file.read_text())
-        data = base64.b64decode(payload["data"])
-        if payload.get("alg") == "dpapi":
-            token = self._dpapi(data, False).decode()
-        else:
-            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-            token = AESGCM(self._master_key()).decrypt(base64.b64decode(payload["iv"]), data, None).decode()
-        self._cached = token
-        return token
-
-    def remove(self):
+        self.file = self.dir / "db.json"
+        self.lock = threading.RLock()
+        self.data = {"users": [], "cabinets": [], "settings": {"percent": 20}, "sessions": {}}
         if self.file.exists():
-            self.file.unlink()
-        self._cached = None
+            self.data.update(json.loads(self.file.read_text(encoding="utf-8")))
+        self.keys = {}
 
-
-# ---------------------------------------------------------------- WB
-
-class WbError(Exception):
-    def __init__(self, code, message, status=None):
-        super().__init__(message)
-        self.code = code
-        self.status = status
-
-
-def _snippet(raw):
-    """Начало ответа WB для диагностики; всё похожее на ключ вырезаем."""
-    text = raw.decode("utf-8", "replace")
-    text = re.sub(r"<[^>]*>", " ", text)
-    text = re.sub(r"[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*", "[скрыто]", text)
-    return re.sub(r"\s+", " ", text).strip()[:200]
-
-
-def fetch(date_from, date_to, token):
-    body = json.dumps({
-        "from": date_from, "to": date_to, "isNewMotivation": True,
-        "isNotConfirmedWithTransportRequests": None, "officeId": None,
-        "paymentTypeId": None, "routeId": None, "supplierId": None,
-    }).encode()
-    req = urllib.request.Request(URL, data=body, method="POST", headers={
-        "Authorization": "Bearer " + token,
-        "Content-Type": "application/json;charset=utf-8",
-        "Accept": "application/json, text/plain, */*",
-        "Origin": "https://ol.wildberries.ru",
-        "Referer": "https://ol.wildberries.ru/",
-    })
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            raw = r.read()
-    except urllib.error.HTTPError as e:
-        detail = _snippet(e.read() or b"")
-        tail = f" (WB ответил {e.code}{': ' + detail if detail else ''})"
-        if e.code in (401, 403):
-            print(f"WB ответил {e.code}{': ' + detail if detail else ''}", file=sys.stderr)
-            raise WbError("KEY_EXPIRED", "Ключ устарел, обновите." + tail, e.code)
-        if e.code == 429:
-            raise WbError("WB_RATE_LIMIT", "WB ограничил частоту запросов, попробуйте через пару минут.", 429)
-        raise WbError("WB_HTTP", f"Ошибка сервера WB: {e.code}.", e.code)
-    except (urllib.error.URLError, TimeoutError, OSError):
-        raise WbError("WB_NETWORK", "Нет связи с WB. Проверьте интернет. Если сайт запущен на хостинге, "
-                                    "WB может не пускать такие запросы — запустите на домашнем компьютере.")
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        raise WbError("WB_FORMAT", "WB вернул не JSON — возможно, API изменился.")
-    if isinstance(data, dict):
-        data = next((data[k] for k in ("data", "items", "result") if isinstance(data.get(k), list)), None)
-    if not isinstance(data, list):
-        raise WbError("WB_FORMAT", "Неожиданный формат ответа WB — возможно, API изменился.")
-    return data
-
-
-class WaysheetCache:
-    """Один и тот же период запрашиваем у WB не чаще раза в минуту."""
-
-    def __init__(self, store, fetcher=None):
-        self.store = store
-        self.fetcher = fetcher or fetch
-        self.lock = threading.Lock()
-        self.entries = {}  # (from, to) -> {"at", "lock", "result" | "error"}
-
-    def clear(self):
+    def save(self):
         with self.lock:
-            self.entries.clear()
+            self.dir.mkdir(parents=True, exist_ok=True)
+            tmp = self.file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
+            if sys.platform != "win32":
+                os.chmod(tmp, 0o600)
+            os.replace(tmp, self.file)
 
-    def get(self, date_from, date_to):
-        key = (date_from, date_to)
+    def new_id(self):
+        return secrets.token_hex(4)
+
+    # --- пользователи
+    def users(self):
+        return self.data["users"]
+
+    def user(self, uid):
+        return next((u for u in self.users() if u["id"] == uid), None)
+
+    def user_by_login(self, login):
+        return next((u for u in self.users() if u["login"].casefold() == str(login).strip().casefold()), None)
+
+    # --- кабинеты
+    def cabinets(self):
+        return self.data["cabinets"]
+
+    def cabinet(self, cid):
+        return next((c for c in self.cabinets() if c["id"] == cid), None)
+
+    def key_store(self, cid):
+        if cid not in self.keys:
+            self.keys[cid] = KeyStore(self.dir, filename=f"wb-key-{cid}.enc")
+        return self.keys[cid]
+
+    def token(self, cid):
+        try:
+            return self.key_store(cid).load()
+        except Exception:
+            return None
+
+    # --- сессии
+    def create_session(self, uid):
+        token = secrets.token_urlsafe(32)
         with self.lock:
             now = time.time()
-            for k in [k for k, v in self.entries.items() if now - v["at"] > CACHE_TTL]:
-                del self.entries[k]
-            entry = self.entries.get(key)
-            if entry is None:
-                entry = {"at": now, "lock": threading.Lock()}
-                self.entries[key] = entry
-        with entry["lock"]:  # параллельные запросы ждут один общий ответ
-            if "result" in entry:
-                return entry["result"]
-            if "error" in entry:
-                raise entry["error"]
-            token = self.store.load()
-            if not token:
-                with self.lock:
-                    self.entries.pop(key, None)
-                raise WbError("NO_KEY", "Ключ WB не задан. Вставьте его в настройках.")
+            self.data["sessions"] = {k: v for k, v in self.data["sessions"].items() if v["exp"] > now}
+            self.data["sessions"][hashlib.sha256(token.encode()).hexdigest()] = {"uid": uid, "exp": now + SESSION_TTL}
+            self.save()
+        return token
+
+    def session_user(self, token):
+        if not token:
+            return None
+        s = self.data["sessions"].get(hashlib.sha256(token.encode()).hexdigest())
+        if not s or s["exp"] < time.time():
+            return None
+        return self.user(s["uid"])
+
+    def drop_session(self, token):
+        with self.lock:
+            if self.data["sessions"].pop(hashlib.sha256(token.encode()).hexdigest(), None):
+                self.save()
+
+    def drop_user_sessions(self, uid):
+        with self.lock:
+            self.data["sessions"] = {k: v for k, v in self.data["sessions"].items() if v["uid"] != uid}
+            self.save()
+
+    def migrate_single_key(self):
+        """Ключ от прошлой версии (data/wb-key.enc) становится первым кабинетом."""
+        old = self.dir / "wb-key.enc"
+        if self.cabinets() or not old.exists():
+            return
+        cid = self.new_id()
+        os.replace(old, self.dir / f"wb-key-{cid}.enc")
+        with self.lock:
+            self.cabinets().append({"id": cid, "name": "Кабинет 1"})
+            self.save()
+
+
+def public_user(u):
+    return {k: u.get(k) for k in ("id", "login", "name", "role", "driverName", "driverId", "percent")}
+
+
+def user_matches(u, t):
+    """Относится ли путевой к сотруднику: по ID водителя WB, иначе по ФИО."""
+    if u.get("driverId") not in (None, ""):
+        return str(t.get("driverId")) == str(u["driverId"])
+    return norm_name(t.get("driverName")) == norm_name(u.get("driverName") or u.get("name"))
+
+
+def fmt_rub(k):
+    sign = "-" if k < 0 else ""
+    rub, kop = divmod(abs(k), 100)
+    return f"{sign}{rub:,}".replace(",", " ") + f",{kop:02d}"
+
+
+def ru_date(s):
+    y, m, d = s.split("-")
+    return f"{d}.{m}.{y}"
+
+
+def report_text(name, date_from, date_to, row, percent):
+    pct = f"{percent:g}".replace(".", ",")
+    return "\n".join([
+        f"Зарплата партнера: {name}",
+        f"Период: {ru_date(date_from)} - {ru_date(date_to)}",
+        f"Путевых записей: {row['tripsCount']}",
+        f"Сумма всех путевых: {fmt_rub(row['sum'])}",
+        f"Минус удержание ({pct}%): {fmt_rub(row['retention'])}",
+        f"После удержания: {fmt_rub(row['sum'] - row['retention'])}",
+        f"Сумма штрафов: {fmt_rub(row['fines'])}",
+        f"Минус штрафы от путевых: {fmt_rub(row['fines'])}",
+        f"Итого к выплате водителю: {fmt_rub(row['payout'])}",
+    ])
+
+
+# ---------------------------------------------------------------- приложение
+
+class App:
+    def __init__(self, data_dir, fetcher=None):
+        self.db = Db(data_dir)
+        self.db.migrate_single_key()
+        self.cache = WaysheetCache(fetcher)
+        self.login_failures = {}
+
+    def percent_for(self, user):
+        p = user.get("percent") if user else None
+        return p if p is not None else self.db.data["settings"]["percent"]
+
+    def load_trips(self, date_from, date_to, cabinet_ids=None):
+        """Путевые за период из WB (to + 1 день), по всем или выбранным кабинетам."""
+        trips, fetched, errors = [], [], []
+        for cab in self.db.cabinets():
+            if cabinet_ids is not None and cab["id"] not in cabinet_ids:
+                continue
             try:
-                tasks = self.fetcher(date_from, date_to, token)
+                items, at = self.cache.get(cab["id"], self.db.token(cab["id"]), date_from, add_days(date_to, 1))
             except WbError as e:
-                entry["error"] = e
-                raise
-            entry["result"] = (tasks, datetime.now(timezone.utc).isoformat())
-            return entry["result"]
+                errors.append((cab, e))
+                continue
+            fetched.append(at)
+            trips.extend({**t, "_cabinet": cab["id"], "_cabinetName": cab["name"]} for t in items if isinstance(t, dict))
+        if errors and not fetched:
+            cab, e = errors[0]
+            raise WbError(e.code, f"{cab['name']}: {e}" if len(self.db.cabinets()) > 1 else str(e), e.status)
+        if not self.db.cabinets():
+            raise WbError("NO_KEY", "Кабинеты ещё не добавлены. Администратор добавляет их в настройках.")
+        warnings = [f"{cab['name']}: {e}" for cab, e in errors]
+        return trips, (max(fetched) if fetched else None), warnings
+
+    def employee_report(self, user, date_from, date_to):
+        trips, fetched_at, warnings = self.load_trips(date_from, date_to)
+        mine = [{**t, "driverId": "me", "driverName": user["name"]} for t in trips if user_matches(user, t)]
+        percent = self.percent_for(user)
+        rep = build_report(mine, date_from, date_to, percent)
+        row = rep["drivers"][0] if rep["drivers"] else {
+            "tripsCount": 0, "sum": 0, "retention": 0, "fines": 0, "payout": 0, "trips": []}
+        return {
+            "employee": public_user(user), "from": date_from, "to": date_to, "percent": percent,
+            "tripsCount": row["tripsCount"], "sum": row["sum"], "retention": row["retention"],
+            "afterRetention": row["sum"] - row["retention"], "fines": row["fines"], "payout": row["payout"],
+            "trips": row["trips"], "inTransit": len(rep["inTransit"]),
+            "text": report_text(user["name"], date_from, date_to, row, percent),
+            "fetchedAt": fetched_at, "warnings": warnings,
+        }
 
 
-# ---------------------------------------------------------------- настройки
-
-def settings_file():
-    return DATA_DIR / "settings.json"
-
-
-def load_settings():
-    s = {"percent": 20}
-    try:
-        s.update(json.loads(settings_file().read_text(encoding="utf-8")))
-    except (OSError, ValueError):
-        pass
-    return s
-
-
-def save_settings(s):
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    settings_file().write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
+def waysheet_card(t):
+    v = trip_view(t)
+    v.update({"driverName": t.get("driverName") or "—", "driverId": t.get("driverId"),
+              "cabinetId": t.get("_cabinet"), "cabinetName": t.get("_cabinetName") or "",
+              "total": v["price"] - v["fine"]})
+    return v
 
 
 # ---------------------------------------------------------------- HTTP
@@ -480,13 +256,26 @@ SECURITY_HEADERS = {
 }
 
 
-def make_handler(store, cache):
+class HttpError(Exception):
+    def __init__(self, status, code, message):
+        super().__init__(message)
+        self.status, self.code = status, code
+
+
+def bad(code, message, status=400):
+    return HttpError(status, code, message)
+
+
+def make_handler(app):
+    db = app.db
+
     class Handler(BaseHTTPRequestHandler):
-        server_version = "wb-salary"
+        server_version = "logistica-wb"
 
         def log_message(self, fmt, *args):
-            pass  # не пишем запросы в консоль
+            pass  # запросы в консоль не пишем
 
+        # --- ответ
         def send(self, status, body, headers=None):
             if isinstance(body, (bytes, str)):
                 data = body.encode() if isinstance(body, str) else body
@@ -506,125 +295,391 @@ def make_handler(store, cache):
             self.end_headers()
             self.wfile.write(data)
 
-        def error(self, status, code, message):
-            self.send(status, {"error": {"code": code, "message": message}})
-
-        def read_json(self):
+        # --- запрос
+        def body(self):
             n = int(self.headers.get("Content-Length") or 0)
             if n > 64 * 1024:
-                raise ValueError("too large")
-            return json.loads(self.rfile.read(n) or b"{}")
-
-        def authorized(self):
-            if not APP_PASSWORD:
-                return True
-            m = re.match(r"^Basic\s+(.+)$", self.headers.get("Authorization") or "", re.I)
-            if not m:
-                return False
+                raise bad("BAD_JSON", "Слишком большой запрос.")
             try:
-                password = base64.b64decode(m.group(1)).decode().split(":", 1)[1]
-            except (ValueError, IndexError):
-                return False
-            return hmac.compare_digest(password.encode(), APP_PASSWORD.encode())
+                data = json.loads(self.rfile.read(n) or b"{}")
+            except ValueError:
+                raise bad("BAD_JSON", "Неверный запрос.")
+            if not isinstance(data, dict):
+                raise bad("BAD_JSON", "Неверный запрос.")
+            return data
+
+        def cookie(self):
+            m = re.search(rf"(?:^|;\s*){COOKIE}=([^;]+)", self.headers.get("Cookie") or "")
+            return m.group(1) if m else None
+
+        def current_user(self):
+            return db.session_user(self.cookie())
+
+        def need_user(self):
+            u = self.current_user()
+            if not u:
+                raise bad("AUTH", "Войдите заново.", 401)
+            return u
+
+        def need_admin(self):
+            u = self.need_user()
+            if u["role"] != "admin":
+                raise bad("FORBIDDEN", "Доступно только администратору.", 403)
+            return u
 
         def same_origin(self):
             origin = self.headers.get("Origin")
             return not origin or urlparse(origin).netloc == self.headers.get("Host")
 
-        def dispatch(self, method):
-            if not self.authorized():
-                return self.send(401, "Нужен пароль", {
-                    "WWW-Authenticate": 'Basic realm="WB salary", charset="UTF-8"',
-                    "Content-Type": "text/plain; charset=utf-8"})
+        def period(self, q):
+            date_from = (q.get("from") or [None])[0]
+            date_to = (q.get("to") or [date_from])[0]
+            if not valid_date(date_from) or not valid_date(date_to):
+                raise bad("BAD_DATE", "Неверная дата.")
+            if date_from > date_to:
+                raise bad("BAD_DATE", "Начало периода позже конца.")
+            if add_days(date_from, MAX_PERIOD_DAYS) <= date_to:
+                raise bad("BAD_DATE", f"Период не длиннее {MAX_PERIOD_DAYS} дней.")
+            return date_from, date_to
+
+        # --- маршрутизация
+        def route(self, method):
             url = urlparse(self.path)
-            path = url.path
+            path, q = url.path, parse_qs(url.query)
             if method == "GET" and path in STATIC:
                 name, ctype = STATIC[path]
                 return self.send(200, (PUBLIC_DIR / name).read_bytes(),
                                  {"Content-Type": ctype, "Cache-Control": "no-cache"})
             if method != "GET" and not self.same_origin():
-                return self.error(403, "FORBIDDEN", "Чужой источник запроса.")
+                raise bad("FORBIDDEN", "Чужой источник запроса.", 403)
 
-            if path == "/api/report" and method == "GET":
-                return self.report(parse_qs(url.query))
+            handler, item_id = ROUTES.get((method, path)), None
+            m = re.match(r"^(.*)/([0-9a-f]{8})$", path)
+            if not handler and m:
+                handler, item_id = ROUTES.get((method, m.group(1) + "/:id")), m.group(2)
+            if not handler:
+                raise bad("NOT_FOUND", "Не найдено.", 404)
+            result = handler(self, q, item_id)
+            if result is not None:
+                self.send(200, result)
 
-            if path == "/api/key" and method == "GET":
+        # ======== вход
+        def api_me(self, q, _):
+            u = self.current_user()
+            return {"user": public_user(u) if u else None, "needsSetup": not db.users()}
+
+        def api_setup(self, q, _):
+            if db.users():
+                raise bad("FORBIDDEN", "Администратор уже создан.", 403)
+            b = self.body()
+            user = self.make_user(b, role="admin")
+            with db.lock:
+                db.users().append(user)
+                db.save()
+            return self.start_session(user)
+
+        def api_login(self, q, _):
+            ip = self.client_address[0]
+            now = time.time()
+            fails = [t for t in app.login_failures.get(ip, []) if now - t < 600]
+            if len(fails) >= 10:
+                raise bad("RATE", "Слишком много попыток. Подождите 10 минут.", 429)
+            b = self.body()
+            u = db.user_by_login(b.get("login", ""))
+            if not u or not check_password(u, str(b.get("password", ""))):
+                app.login_failures[ip] = fails + [now]
+                raise bad("BAD_LOGIN", "Неверный логин или пароль.", 401)
+            app.login_failures.pop(ip, None)
+            return self.start_session(u)
+
+        def start_session(self, u):
+            token = db.create_session(u["id"])
+            self.send(200, {"user": public_user(u)}, {
+                "Set-Cookie": f"{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_TTL}"})
+
+        def api_logout(self, q, _):
+            if self.cookie():
+                db.drop_session(self.cookie())
+            self.send(200, {"ok": True}, {"Set-Cookie": f"{COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"})
+
+        def api_password(self, q, _):
+            u = self.need_user()
+            b = self.body()
+            if not check_password(u, str(b.get("old", ""))):
+                raise bad("BAD_LOGIN", "Старый пароль неверный.")
+            new = str(b.get("new", ""))
+            if len(new) < 6:
+                raise bad("BAD_PASSWORD", "Пароль — не короче 6 символов.")
+            with db.lock:
+                u["salt"], u["hash"] = hash_password(new)
+                db.save()
+            return {"ok": True}
+
+        # ======== сотрудники
+        def make_user(self, b, role=None, existing=None):
+            name = " ".join(str(b.get("name", "")).split())
+            login = str(b.get("login", "")).strip()
+            if not existing or "name" in b:
+                if not name:
+                    raise bad("BAD_USER", "Укажите ФИО.")
+            if not existing or "login" in b:
+                if not re.match(r"^[\w.@-]{3,40}$", login):
+                    raise bad("BAD_USER", "Логин — от 3 символов: буквы, цифры, точка, дефис.")
+                other = db.user_by_login(login)
+                if other and other is not existing:
+                    raise bad("BAD_USER", "Такой логин уже есть.")
+            u = existing if existing is not None else {"id": db.new_id()}
+            if not existing or "name" in b:
+                u["name"] = name
+            if not existing or "login" in b:
+                u["login"] = login
+            if role or "role" in b:
+                r = role or b.get("role")
+                if r not in ("admin", "driver"):
+                    raise bad("BAD_USER", "Неверная роль.")
+                u["role"] = r
+            for f in ("driverName", "driverId"):
+                if f in b or not existing:
+                    v = str(b.get(f) or "").strip()
+                    u[f] = v or None
+            if "percent" in b or not existing:
+                raw = b.get("percent")
+                if raw in (None, ""):
+                    u["percent"] = None
+                else:
+                    p = parse_percent(raw)
+                    if p is None:
+                        raise bad("BAD_PERCENT", "Процент должен быть от 0 до 100.")
+                    u["percent"] = p
+            if b.get("password") or not existing:
+                pw = str(b.get("password") or "")
+                if len(pw) < 6:
+                    raise bad("BAD_PASSWORD", "Пароль — не короче 6 символов.")
+                u["salt"], u["hash"] = hash_password(pw)
+            return u
+
+        def api_users(self, q, _):
+            self.need_admin()
+            return {"users": [public_user(u) for u in db.users()]}
+
+        def api_user_create(self, q, _):
+            self.need_admin()
+            u = self.make_user(self.body())
+            with db.lock:
+                db.users().append(u)
+                db.save()
+            return public_user(u)
+
+        def api_user_update(self, q, uid):
+            me = self.need_admin()
+            u = db.user(uid)
+            if not u:
+                raise bad("NOT_FOUND", "Сотрудник не найден.", 404)
+            b = self.body()
+            if u is me and b.get("role") == "driver":
+                raise bad("BAD_USER", "Нельзя снять права администратора с себя.")
+            with db.lock:
+                self.make_user(b, existing=u)
+                db.save()
+            if b.get("password"):
+                db.drop_user_sessions(u["id"])
+            return public_user(u)
+
+        def api_user_delete(self, q, uid):
+            me = self.need_admin()
+            if uid == me["id"]:
+                raise bad("BAD_USER", "Нельзя удалить себя.")
+            with db.lock:
+                db.data["users"] = [u for u in db.users() if u["id"] != uid]
+                db.save()
+            db.drop_user_sessions(uid)
+            return {"ok": True}
+
+        # ======== кабинеты
+        def cabinet_info(self, c, admin):
+            info = {"id": c["id"], "name": c["name"],
+                    "lastSuccess": app.cache.last_success.get(c["id"])}
+            if admin:
                 try:
-                    return self.send(200, key_info(store.load()))
+                    info["key"] = key_info(db.key_store(c["id"]).load())
                 except Exception:
-                    return self.send(200, {"configured": False, "broken": True})
+                    info["key"] = {"configured": False, "broken": True}
+            return info
 
-            if path == "/api/key" and method == "POST":
-                try:
-                    body = self.read_json()
-                except ValueError:
-                    return self.error(400, "BAD_JSON", "Неверный запрос.")
-                token = extract_token(body.get("value") if isinstance(body, dict) else None)
-                if not token:
-                    return self.error(400, "BAD_KEY", "Не нашёл ключ. Вставьте адрес страницы "
-                                      "ol.wildberries.ru целиком (с «bearer=») или сам ключ.")
-                info = key_info(token)
-                if info["expired"]:
-                    return self.error(400, "KEY_EXPIRED", "Этот ключ уже истёк — возьмите свежий. "
-                                      "Если ключ точно свежий, проверьте дату и время на компьютере.")
-                try:
-                    store.save(token)
-                except RuntimeError as e:
-                    return self.error(500, "NO_CRYPTO", str(e))
-                cache.clear()
-                return self.send(200, info)
+        def api_cabinets(self, q, _):
+            u = self.need_user()
+            return {"cabinets": [self.cabinet_info(c, u["role"] == "admin") for c in db.cabinets()]}
 
-            if path == "/api/key" and method == "DELETE":
-                store.remove()
-                cache.clear()
-                return self.send(200, {"configured": False})
-
-            if path == "/api/settings" and method == "GET":
-                return self.send(200, load_settings())
-
-            if path == "/api/settings" and method == "POST":
-                try:
-                    body = self.read_json()
-                except ValueError:
-                    return self.error(400, "BAD_JSON", "Неверный запрос.")
-                percent = parse_percent(body.get("percent") if isinstance(body, dict) else None)
-                if percent is None:
-                    return self.error(400, "BAD_PERCENT", "Процент должен быть от 0 до 100.")
-                s = {**load_settings(), "percent": percent}
-                save_settings(s)
-                return self.send(200, s)
-
-            return self.error(404, "NOT_FOUND", "Не найдено.")
-
-        def report(self, q):
-            date_from = (q.get("from") or [None])[0]
-            date_to = (q.get("to") or [date_from])[0]
-            if not valid_date(date_from) or not valid_date(date_to):
-                return self.error(400, "BAD_DATE", "Неверная дата.")
-            if date_from > date_to:
-                return self.error(400, "BAD_DATE", "Начало периода позже конца.")
-            if add_days(date_from, MAX_PERIOD_DAYS) <= date_to:
-                return self.error(400, "BAD_DATE", f"Период не длиннее {MAX_PERIOD_DAYS} дней.")
-            raw = (q.get("percent") or [None])[0]
-            percent = load_settings()["percent"] if raw is None else parse_percent(raw)
-            if percent is None:
-                return self.error(400, "BAD_PERCENT", "Процент должен быть от 0 до 100.")
+        def save_key(self, cid, value):
+            token = extract_token(value)
+            if not token:
+                raise bad("BAD_KEY", "Не нашёл ключ. Вставьте адрес страницы ol.wildberries.ru целиком "
+                                     "(с «bearer=») или сам ключ.")
+            if key_info(token)["expired"]:
+                raise bad("KEY_EXPIRED", "Этот ключ уже истёк — возьмите свежий. Если ключ точно свежий, "
+                                         "проверьте дату и время на компьютере.")
             try:
-                # WB запрашиваем до следующего дня, затем режем по дате закрытия.
-                tasks, fetched_at = cache.get(date_from, add_days(date_to, 1))
-            except WbError as e:
-                status = 409 if e.code in ("KEY_EXPIRED", "NO_KEY") else 502
-                return self.error(status, e.code, str(e))
-            rep = build_report(tasks, date_from, date_to, percent)
-            self.send(200, {**rep, "fetchedAt": fetched_at, "cacheTtlSec": CACHE_TTL})
+                db.key_store(cid).save(token)
+            except RuntimeError as e:
+                raise bad("NO_CRYPTO", str(e), 500)
+            app.cache.clear(cid)
 
+        def api_cabinet_create(self, q, _):
+            self.need_admin()
+            b = self.body()
+            name = " ".join(str(b.get("name", "")).split())
+            if not name:
+                raise bad("BAD_CABINET", "Укажите название кабинета, например «ИП Иванов Иван».")
+            cid = db.new_id()
+            self.save_key(cid, b.get("value"))
+            with db.lock:
+                db.cabinets().append({"id": cid, "name": name})
+                db.save()
+            return self.cabinet_info(db.cabinet(cid), True)
+
+        def api_cabinet_update(self, q, cid):
+            self.need_admin()
+            c = db.cabinet(cid)
+            if not c:
+                raise bad("NOT_FOUND", "Кабинет не найден.", 404)
+            b = self.body()
+            if b.get("value"):
+                self.save_key(cid, b["value"])
+            if b.get("name"):
+                with db.lock:
+                    c["name"] = " ".join(str(b["name"]).split())
+                    db.save()
+            return self.cabinet_info(c, True)
+
+        def api_cabinet_delete(self, q, cid):
+            self.need_admin()
+            db.key_store(cid).remove()
+            app.cache.clear(cid)
+            with db.lock:
+                db.data["cabinets"] = [c for c in db.cabinets() if c["id"] != cid]
+                db.save()
+            return {"ok": True}
+
+        # ======== настройки
+        def api_settings(self, q, _):
+            self.need_user()
+            return db.data["settings"]
+
+        def api_settings_save(self, q, _):
+            self.need_admin()
+            p = parse_percent(self.body().get("percent"))
+            if p is None:
+                raise bad("BAD_PERCENT", "Процент должен быть от 0 до 100.")
+            with db.lock:
+                db.data["settings"]["percent"] = p
+                db.save()
+            return db.data["settings"]
+
+        # ======== данные
+        def target_user(self, q):
+            u = self.need_user()
+            uid = (q.get("employee") or [None])[0]
+            if uid and uid != u["id"]:
+                if u["role"] != "admin":
+                    raise bad("FORBIDDEN", "Можно смотреть только свои данные.", 403)
+                u = db.user(uid)
+                if not u:
+                    raise bad("NOT_FOUND", "Сотрудник не найден.", 404)
+            return u
+
+        def api_report(self, q, _):
+            user = self.target_user(q)
+            date_from, date_to = self.period(q)
+            return app.employee_report(user, date_from, date_to)
+
+        def api_fines(self, q, _):
+            """Удержания WB: путевые со штрафами за период."""
+            u = self.need_user()
+            date_from, date_to = self.period(q)
+            trips, fetched_at, warnings = app.load_trips(date_from, date_to)
+            rows = []
+            for t in trips:
+                if t.get("isDeleted") or (u["role"] != "admin" and not user_matches(u, t)):
+                    continue
+                day = day_of(t.get("closeDt") or t.get("openDt"))
+                if not day or not (date_from <= day <= date_to):
+                    continue
+                card = waysheet_card(t)
+                if card["fine"] or card["isFine"] or card["isFineUnderConsideration"]:
+                    rows.append(card)
+            rows.sort(key=lambda r: str(r["closeDt"] or r["openDt"]))
+            return {"items": rows, "total": sum(r["fine"] for r in rows),
+                    "fetchedAt": fetched_at, "warnings": warnings}
+
+        def api_waysheets(self, q, _):
+            u = self.need_user()
+            day = (q.get("date") or [None])[0]
+            if not valid_date(day):
+                raise bad("BAD_DATE", "Неверная дата.")
+            cid = (q.get("cabinet") or [None])[0]
+            if not cid or not db.cabinet(cid):
+                raise bad("BAD_CABINET", "Выбери кабинет.")
+            trips, fetched_at, _w = app.load_trips(day, day, [cid])
+            items = []
+            for t in trips:
+                if t.get("isDeleted") or (u["role"] != "admin" and not user_matches(u, t)):
+                    continue
+                if day_of(t.get("closeDt") or t.get("openDt")) != day:
+                    continue
+                items.append(waysheet_card(t))
+            items.sort(key=lambda r: str(r["openDt"]))
+            return {"items": items, "fetchedAt": fetched_at}
+
+        def api_summary(self, q, _):
+            self.need_admin()
+            date_from, date_to = self.period(q)
+            raw = (q.get("percent") or [None])[0]
+            percent = db.data["settings"]["percent"] if raw is None else parse_percent(raw)
+            if percent is None:
+                raise bad("BAD_PERCENT", "Процент должен быть от 0 до 100.")
+            trips, fetched_at, warnings = app.load_trips(date_from, date_to)
+            rep = build_report(trips, date_from, date_to, percent)
+            return {**rep, "fetchedAt": fetched_at, "warnings": warnings}
+
+        def api_drivers(self, q, _):
+            """ФИО водителей из WB — чтобы привязать сотрудников."""
+            self.need_admin()
+            date_from, date_to = self.period(q)
+            trips, _, _ = app.load_trips(date_from, date_to)
+            seen = {}
+            for t in trips:
+                name = t.get("driverName")
+                if name:
+                    seen.setdefault((name, str(t.get("driverId") or "")), 0)
+                    seen[(name, str(t.get("driverId") or ""))] += 1
+            return {"drivers": [{"driverName": n, "driverId": i or None, "trips": c}
+                                for (n, i), c in sorted(seen.items(), key=lambda x: norm_name(x[0][0]))]}
+
+        def api_raw(self, q, _):
+            """Сырой ответ WB за день — для проверки полей. Ключа в нём нет."""
+            self.need_admin()
+            day = (q.get("date") or [None])[0]
+            cid = (q.get("cabinet") or [None])[0]
+            if not valid_date(day) or not db.cabinet(cid):
+                raise bad("BAD_DATE", "Укажите день и кабинет.")
+            items, _ = app.cache.get(cid, db.token(cid), day, add_days(day, 1))
+            self.send(200, json.dumps(items, ensure_ascii=False, indent=2).encode(), {
+                "Content-Type": "application/json; charset=utf-8",
+                "Content-Disposition": f'attachment; filename="wb-{day}.json"'})
+
+        # --- методы HTTP
         def handle_method(self, method):
             try:
-                self.dispatch(method)
+                self.route(method)
+            except HttpError as e:
+                self.send(e.status, {"error": {"code": e.code, "message": str(e)}})
+            except WbError as e:
+                status = 409 if e.code in ("KEY_EXPIRED", "NO_KEY") else 502
+                self.send(status, {"error": {"code": e.code, "message": str(e)}})
             except Exception as e:
-                print("Ошибка:", type(e).__name__, file=sys.stderr)
+                print("Ошибка:", type(e).__name__, e if not isinstance(e, OSError) else "", file=sys.stderr)
                 try:
-                    self.error(500, "INTERNAL", "Внутренняя ошибка сервера.")
+                    self.send(500, {"error": {"code": "INTERNAL", "message": "Внутренняя ошибка сервера."}})
                 except OSError:
                     pass
 
@@ -634,9 +689,35 @@ def make_handler(store, cache):
         def do_POST(self):
             self.handle_method("POST")
 
+        def do_PUT(self):
+            self.handle_method("PUT")
+
         def do_DELETE(self):
             self.handle_method("DELETE")
 
+    ROUTES = {
+        ("GET", "/api/me"): Handler.api_me,
+        ("POST", "/api/setup"): Handler.api_setup,
+        ("POST", "/api/login"): Handler.api_login,
+        ("POST", "/api/logout"): Handler.api_logout,
+        ("POST", "/api/password"): Handler.api_password,
+        ("GET", "/api/users"): Handler.api_users,
+        ("POST", "/api/users"): Handler.api_user_create,
+        ("PUT", "/api/users/:id"): Handler.api_user_update,
+        ("DELETE", "/api/users/:id"): Handler.api_user_delete,
+        ("GET", "/api/cabinets"): Handler.api_cabinets,
+        ("POST", "/api/cabinets"): Handler.api_cabinet_create,
+        ("PUT", "/api/cabinets/:id"): Handler.api_cabinet_update,
+        ("DELETE", "/api/cabinets/:id"): Handler.api_cabinet_delete,
+        ("GET", "/api/settings"): Handler.api_settings,
+        ("POST", "/api/settings"): Handler.api_settings_save,
+        ("GET", "/api/report"): Handler.api_report,
+        ("GET", "/api/fines"): Handler.api_fines,
+        ("GET", "/api/waysheets"): Handler.api_waysheets,
+        ("GET", "/api/summary"): Handler.api_summary,
+        ("GET", "/api/drivers"): Handler.api_drivers,
+        ("GET", "/api/raw"): Handler.api_raw,
+    }
     return Handler
 
 
@@ -646,19 +727,19 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
 
 
-def make_server(host, port, store=None, cache=None):
-    store = store or KeyStore(DATA_DIR)
-    cache = cache or WaysheetCache(store)
-    return Server((host, port), make_handler(store, cache))
+def make_server(host, port, app=None):
+    app = app or App(DATA_DIR)
+    return Server((host, port), make_handler(app))
 
 
 def main():
+    app = App(DATA_DIR)
     server = None
     port = PORT
     # Если порт занят (например, сайт уже запущен в другом окне), пробуем следующие.
     for port in range(PORT, PORT + 10):
         try:
-            server = make_server(HOST, port)
+            server = make_server(HOST, port, app)
             break
         except OSError:
             print(f"Порт {port} занят, пробую {port + 1}…")
@@ -666,9 +747,9 @@ def main():
         sys.exit("Не нашёл свободный порт.")
     url = f"http://{'localhost' if HOST == '0.0.0.0' else HOST}:{port}"
     print(f"\n  Сайт запущен: {url}")
+    if HOST == "0.0.0.0":
+        print("  С телефона в той же Wi-Fi сети: http://<IP этого компьютера>:" + str(port))
     print("  Не закрывайте это окно, пока пользуетесь сайтом. Остановить: Ctrl+C.\n")
-    if HOST not in ("127.0.0.1", "localhost") and not APP_PASSWORD:
-        print("Внимание: сайт доступен из сети без пароля. Задайте APP_PASSWORD.")
     if not os.environ.get("NO_BROWSER"):
         threading.Timer(0.5, webbrowser.open, (url,)).start()
     try:
