@@ -19,7 +19,7 @@
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:theme="@android:style/Theme.DeviceDefault.Light.DarkActionBar">
+        android:theme="@style/AppTheme">
 
         <activity
             android:name=".MainActivity"
@@ -33,7 +33,7 @@
         <activity
             android:name=".AppPickerActivity"
             android:exported="false"
-            android:label="Выбор приложений" />
+           />
 
         <service
             android:name=".OverlayService"

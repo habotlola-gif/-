@@ -1,3 +1,6 @@
 <resources>
-    <color name="ic_bg">#1E88E5</color>
+    <color name="ic_bg">#000000</color>
+    <color name="bg">#000000</color>
+    <color name="orange">#E8763A</color>
+    <color name="text">#F5F5F5</color>
 </resources>

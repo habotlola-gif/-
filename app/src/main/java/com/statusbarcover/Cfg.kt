@@ -18,6 +18,11 @@ class Cfg(private val ctx: Context) {
         get() = sp.getBoolean("autostart", true)
         set(v) = putBool("autostart", v)
 
+    /** Включать полосу сама, когда открываешь приложение. */
+    var autoOnOpen: Boolean
+        get() = sp.getBoolean("autoOnOpen", true)
+        set(v) = putBool("autoOnOpen", v)
+
     /** Режим редактора: полоса видна с красной рамкой и перетаскивается пальцем. */
     var edit: Boolean
         get() = sp.getBoolean("edit", false)

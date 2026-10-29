@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
 import android.content.SharedPreferences
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -25,8 +26,12 @@ class MainActivity : Activity() {
 
     private lateinit var cfg: Cfg
     private lateinit var root: LinearLayout
+    private lateinit var cur: LinearLayout
     private val reloaders = mutableListOf<() -> Unit>()
     private var loading = false
+
+    /** Включить полосу, как только будет выдано разрешение. */
+    private var pendingEnable = false
 
     private lateinit var permText: TextView
     private lateinit var permBtn: Button
@@ -41,14 +46,20 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         cfg = Cfg(this)
-        title = "Шторка OLED"
 
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(8), dp(16), dp(24))
+            setPadding(dp(16), dp(24), dp(16), dp(32))
         }
-        setContentView(ScrollView(this).apply { addView(root) })
+        setContentView(ScrollView(this).apply {
+            setBackgroundColor(Ui.BG)
+            isFillViewport = true
+            addView(root)
+        })
         build()
+
+        // автозапуск при входе в приложение
+        if (savedInstanceState == null && cfg.autoOnOpen && !cfg.enabled) pendingEnable = true
 
         if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
@@ -57,6 +68,10 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (pendingEnable && canDraw()) {
+            cfg.enabled = true
+            pendingEnable = false
+        }
         cfg.sp.registerOnSharedPreferenceChangeListener(prefListener)
         reload()
         syncService()
@@ -76,9 +91,13 @@ class MainActivity : Activity() {
         super.onStop()
     }
 
-    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+    private fun dp(v: Int) = Ui.dp(this, v)
 
     private fun canDraw() = Settings.canDrawOverlays(this)
+
+    private fun openOverlaySettings() {
+        startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+    }
 
     private fun accessibilityOn(): Boolean {
         val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
@@ -93,40 +112,30 @@ class MainActivity : Activity() {
 
     // ---------- построение интерфейса ----------
 
-    private fun header(text: String) {
-        root.addView(TextView(this).apply {
-            this.text = text
-            textSize = 18f
-            setPadding(0, dp(24), 0, dp(4))
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-        })
+    private fun section(title: String?) {
+        if (title != null) root.addView(Ui.sectionTitle(this, title))
+        cur = Ui.card(this)
+        root.addView(cur, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
     }
 
-    private fun note(text: String): TextView = TextView(this).apply {
-        this.text = text
-        textSize = 13f
-        setPadding(0, dp(2), 0, dp(6))
-        root.addView(this)
-    }
+    private fun note(text: String): TextView = Ui.note(this, text).also { cur.addView(it) }
 
-    private fun button(text: String, onClick: () -> Unit): Button = Button(this).apply {
-        this.text = text
-        setOnClickListener { onClick() }
-        root.addView(this, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-    }
+    private fun button(text: String, primary: Boolean = true, onClick: () -> Unit): Button =
+        Ui.pill(this, text, primary, onClick).also { cur.addView(it) }
 
     private fun switch(text: String, get: () -> Boolean, set: (Boolean) -> Unit): Switch = Switch(this).apply {
         this.text = text
         textSize = 16f
-        setPadding(0, dp(8), 0, dp(8))
+        Ui.style(this)
+        setPadding(0, dp(10), 0, dp(10))
         setOnCheckedChangeListener { _: CompoundButton, checked: Boolean -> if (!loading) set(checked) }
         reloaders += { isChecked = get() }
-        root.addView(this)
+        cur.addView(this)
     }
 
     private fun slider(label: String, unit: String, min: Int, max: () -> Int, get: () -> Int, set: (Int) -> Unit) {
-        val tv = TextView(this).apply { textSize = 15f; setPadding(0, dp(8), 0, 0) }
-        val sb = SeekBar(this)
+        val tv = Ui.label(this, "", 15f).apply { setPadding(0, dp(8), 0, 0) }
+        val sb = SeekBar(this).also { Ui.style(it) }
         fun show(v: Int) { tv.text = "$label: $v $unit" }
         sb.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar, p: Int, fromUser: Boolean) {
@@ -143,62 +152,79 @@ class MainActivity : Activity() {
             sb.progress = v - min
             show(v)
         }
-        root.addView(tv)
-        root.addView(sb)
+        cur.addView(tv)
+        cur.addView(sb)
     }
 
     private fun build() {
-        header("Полоса")
+        // шапка
+        root.addView(TextView(this).apply {
+            text = "Шторка OLED"
+            textSize = 30f
+            setTextColor(Ui.TEXT)
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(dp(8), 0, 0, 0)
+        })
+        root.addView(TextView(this).apply {
+            text = "Чёрная полоса против выгорания строки состояния"
+            textSize = 14f
+            setTextColor(Ui.SUB)
+            setPadding(dp(8), dp(2), 0, dp(4))
+        })
+
+        section("Полоса")
         permText = note("")
-        permBtn = button("Выдать разрешение «Поверх других окон»") {
-            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-        }
+        permBtn = button("Выдать разрешение «Поверх других окон»") { openOverlaySettings() }
         swEnabled = switch("Включить полосу", { cfg.enabled }) { on ->
             if (on && !canDraw()) {
                 loading = true; swEnabled.isChecked = false; loading = false
-                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                pendingEnable = true
+                openOverlaySettings()
             } else {
                 cfg.enabled = on
                 syncService()
             }
         }
+        switch("Включать при открытии приложения", { cfg.autoOnOpen }) { cfg.autoOnOpen = it }
         switch("Автозапуск при включении телефона", { cfg.autostart }) { cfg.autostart = it }
-        slider("Непрозрачность", "%", 0, { 100 }, { cfg.alphaPct }) { cfg.alphaPct = it }
-        note("100% — полностью чёрная, скрывает часы и значки. Поменьше — значки видны, но тусклее.")
-        slider("Исчезает по нажатию на", "сек", 1, { 30 }, { cfg.hideSec }) { cfg.hideSec = it }
-        note("Нажмите на полосу — она пропадёт на это время, и можно открыть шторку.")
 
-        header("Где показывать")
+        section("Вид")
+        slider("Непрозрачность", "%", 0, { 100 }, { cfg.alphaPct }) { cfg.alphaPct = it }
+        note("100% — полностью чёрная, скрывает часы и значки.")
+        slider("Исчезает по нажатию на", "сек", 1, { 30 }, { cfg.hideSec }) { cfg.hideSec = it }
+        note("Нажмите на полосу — она пропадёт, и можно открыть шторку.")
+
+        section("Где показывать")
         val group = RadioGroup(this)
-        val all = RadioButton(this).apply { text = "Во всех приложениях"; id = 1 }
-        val some = RadioButton(this).apply { text = "Только в выбранных"; id = 2 }
+        val all = RadioButton(this).apply { text = "Во всех приложениях"; id = 1; textSize = 16f; Ui.style(this) }
+        val some = RadioButton(this).apply { text = "Только в выбранных"; id = 2; textSize = 16f; Ui.style(this) }
         group.addView(all)
         group.addView(some)
         group.setOnCheckedChangeListener { _, id -> if (!loading) { cfg.onlySelected = id == 2; reload() } }
         reloaders += { group.check(if (cfg.onlySelected) 2 else 1) }
-        root.addView(group)
+        cur.addView(group)
         pickBtn = button("Выбрать приложения") { startActivity(Intent(this, AppPickerActivity::class.java)) }
         accText = note("")
-        accBtn = button("Включить службу слежения за приложением") {
+        accBtn = button("Включить службу слежения", false) {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
 
-        header("Редактор положения")
+        section("Редактор положения")
         swEdit = switch("Режим перетаскивания", { cfg.edit }) { on ->
             if (on && !canDraw()) {
                 loading = true; swEdit.isChecked = false; loading = false
-                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                openOverlaySettings()
             } else {
                 cfg.edit = on
                 syncService()
             }
         }
-        note("Включите и тяните красную рамку пальцем, либо подгоните ползунками. Режим выключается сам, когда вы выходите из приложения.")
+        note("Тяните красную рамку пальцем или подгоните ползунками. Режим сам выключается, когда вы выходите из приложения.")
         slider("Слева (X)", "px", 0, { cfg.screenW - 20 }, { cfg.x }) { cfg.x = it }
         slider("Сверху (Y)", "px", 0, { cfg.screenH / 3 }, { cfg.y }) { cfg.y = it }
         slider("Ширина", "px", 20, { cfg.screenW }, { cfg.effW }) { cfg.w = it }
         slider("Высота", "px", 10, { 400 }, { cfg.effH }) { cfg.h = it }
-        button("Сбросить положение") { cfg.reset(); reload() }
+        button("Сбросить положение", false) { cfg.reset(); reload() }
     }
 
     private fun reload() {
