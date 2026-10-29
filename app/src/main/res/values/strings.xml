@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Шторка OLED</string>
+    <string name="watcher_description">Нужна только чтобы узнавать, какое приложение сейчас открыто, и показывать полосу в выбранных приложениях. Никакие данные не читаются и не отправляются.</string>
+</resources>
