@@ -175,6 +175,10 @@ class MainActivity : Activity() {
         section("Полоса")
         permText = note("")
         permBtn = button("Выдать разрешение «Поверх других окон»") { openOverlaySettings() }
+        accText = note("")
+        accBtn = button("Включить службу «Шторка OLED»") {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
         swEnabled = switch("Включить полосу", { cfg.enabled }) { on ->
             if (on && !canDraw()) {
                 loading = true; swEnabled.isChecked = false; loading = false
@@ -204,10 +208,6 @@ class MainActivity : Activity() {
         reloaders += { group.check(if (cfg.onlySelected) 2 else 1) }
         cur.addView(group)
         pickBtn = button("Выбрать приложения") { startActivity(Intent(this, AppPickerActivity::class.java)) }
-        accText = note("")
-        accBtn = button("Включить службу слежения", false) {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        }
 
         section("Редактор положения")
         swEdit = switch("Режим перетаскивания", { cfg.edit }) { on ->
@@ -238,10 +238,9 @@ class MainActivity : Activity() {
         val acc = accessibilityOn()
         pickBtn.visibility = if (sel) View.VISIBLE else View.GONE
         pickBtn.text = "Выбрать приложения (${cfg.apps.size})"
-        accText.visibility = if (sel) View.VISIBLE else View.GONE
-        accText.text = if (acc) "Служба слежения включена." else
-            "Чтобы полоса знала, какое приложение открыто, включите службу «Шторка OLED» в «Специальных возможностях». Она только узнаёт название приложения."
-        accBtn.visibility = if (sel && !acc) View.VISIBLE else View.GONE
+        accText.text = if (acc) "Служба «Шторка OLED» включена: полоса рисуется выше строки состояния." else
+            "Включите службу «Шторка OLED» в «Специальных возможностях»: без неё строка состояния на многих телефонах остаётся поверх полосы. Служба только рисует полосу и узнаёт название открытого приложения, экран не читает."
+        accBtn.visibility = if (acc) View.GONE else View.VISIBLE
         loading = false
     }
 }
