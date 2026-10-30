@@ -1,0 +1,272 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/HikeSettings.java b/TMessagesProj/src/main/java/org/telegram/messenger/HikeSettings.java
+new file mode 100644
+index 0000000..282ce7a
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/HikeSettings.java
+@@ -0,0 +1,30 @@
++package org.telegram.messenger;
++
++import android.content.Context;
++import android.content.SharedPreferences;
++
++/** Настройки HikeGram: режим призрака и сохранение удалённых сообщений. */
++public class HikeSettings {
++
++    private static SharedPreferences prefs() {
++        return ApplicationLoader.applicationContext.getSharedPreferences("hikegram", Context.MODE_PRIVATE);
++    }
++
++    /** Не отправлять статус «в сети» и «печатает». */
++    public static boolean ghostMode() {
++        return prefs().getBoolean("ghostMode", true);
++    }
++
++    public static void setGhostMode(boolean value) {
++        prefs().edit().putBoolean("ghostMode", value).apply();
++    }
++
++    /** Не удалять у себя сообщения, которые собеседник удалил. */
++    public static boolean keepDeleted() {
++        return prefs().getBoolean("keepDeleted", true);
++    }
++
++    public static void setKeepDeleted(boolean value) {
++        prefs().edit().putBoolean("keepDeleted", value).apply();
++    }
++}
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index 91faf80..5214da3 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -10516,7 +10516,9 @@ public class MessagesController extends BaseController implements NotificationCe
+         checkReadTasks();
+ 
+         if (getUserConfig().isClientActivated()) {
+-            if (!ignoreSetOnline && getConnectionsManager().getPauseTime() == 0 && ApplicationLoader.isScreenOn && !ApplicationLoader.mainInterfacePausedStageQueue) {
++            if (HikeSettings.ghostMode()) {
++                // HikeGram: статус не отправляем
++            } else if (!ignoreSetOnline && getConnectionsManager().getPauseTime() == 0 && ApplicationLoader.isScreenOn && !ApplicationLoader.mainInterfacePausedStageQueue) {
+                 if (ApplicationLoader.mainInterfacePausedStageQueueTime != 0 && Math.abs(ApplicationLoader.mainInterfacePausedStageQueueTime - System.currentTimeMillis()) > 1000) {
+                     if (statusSettingState != 1 && (lastStatusUpdateTime == 0 || Math.abs(System.currentTimeMillis() - lastStatusUpdateTime) >= 55000 || offlineSent)) {
+                         statusSettingState = 1;
+@@ -11375,6 +11377,9 @@ public class MessagesController extends BaseController implements NotificationCe
+     }
+ 
+     public boolean sendTyping(long dialogId, long threadMsgId, int action, String emojicon, int classGuid) {
++        if (HikeSettings.ghostMode()) {
++            return false;
++        }
+         if (action < 0 || action >= sendingTypings.length || dialogId == 0) {
+             return false;
+         }
+@@ -17593,6 +17598,9 @@ public class MessagesController extends BaseController implements NotificationCe
+     }
+ 
+     protected void deleteMessagesByPush(long dialogId, ArrayList<Integer> ids, long channelId) {
++        if (HikeSettings.keepDeleted()) {
++            return;
++        }
+         getMessagesStorage().getStorageQueue().postRunnable(() -> {
+             AndroidUtilities.runOnUIThread(() -> {
+                 getNotificationCenter().postNotificationName(NotificationCenter.messagesDeleted, ids, channelId, false);
+@@ -18848,6 +18856,9 @@ public class MessagesController extends BaseController implements NotificationCe
+                 dialogs_read_outbox_max.put(dialogId, Math.max(value, update.max_id));
+             } else if (baseUpdate instanceof TL_update.TL_updateDeleteMessages) {
+                 TL_update.TL_updateDeleteMessages update = (TL_update.TL_updateDeleteMessages) baseUpdate;
++                if (HikeSettings.keepDeleted()) {
++                    continue;
++                }
+                 if (deletedMessages == null) {
+                     deletedMessages = new LongSparseArray<>();
+                 }
+@@ -19376,6 +19387,9 @@ public class MessagesController extends BaseController implements NotificationCe
+                 if (BuildVars.LOGS_ENABLED) {
+                     FileLog.d(baseUpdate + " channelId = " + update.channel_id);
+                 }
++                if (HikeSettings.keepDeleted()) {
++                    continue;
++                }
+                 if (deletedMessages == null) {
+                     deletedMessages = new LongSparseArray<>();
+                 }
+diff --git a/TMessagesProj/src/main/res/values-ar/strings.xml b/TMessagesProj/src/main/res/values-ar/strings.xml
+index 8b87004..d46dbc8 100644
+--- a/TMessagesProj/src/main/res/values-ar/strings.xml
++++ b/TMessagesProj/src/main/res/values-ar/strings.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="AppName">تيليجرام</string>
+-    <string name="AppNameBeta">(Beta) تيليجرام</string>
++    <string name="AppName">HikeGram</string>
++    <string name="AppNameBeta">HikeGram</string>
+     <string name="LanguageName">العربية</string>
+     <string name="English">الإنجليزية</string>
+     <string name="LanguageNameInEnglish">Arabic</string>
+diff --git a/TMessagesProj/src/main/res/values-de/strings.xml b/TMessagesProj/src/main/res/values-de/strings.xml
+index 9054784..1be963d 100644
+--- a/TMessagesProj/src/main/res/values-de/strings.xml
++++ b/TMessagesProj/src/main/res/values-de/strings.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="AppName">Telegram</string>
+-    <string name="AppNameBeta">Telegram Beta</string>
++    <string name="AppName">HikeGram</string>
++    <string name="AppNameBeta">HikeGram</string>
+     <string name="LanguageName">Deutsch</string>
+     <string name="English">Englisch</string>
+     <string name="LanguageNameInEnglish">German</string>
+diff --git a/TMessagesProj/src/main/res/values-es/strings.xml b/TMessagesProj/src/main/res/values-es/strings.xml
+index 4779808..1387f6a 100644
+--- a/TMessagesProj/src/main/res/values-es/strings.xml
++++ b/TMessagesProj/src/main/res/values-es/strings.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="AppName">Telegram</string>
+-    <string name="AppNameBeta">Telegram Beta</string>
++    <string name="AppName">HikeGram</string>
++    <string name="AppNameBeta">HikeGram</string>
+     <string name="LanguageName">Español</string>
+     <string name="English">Inglés</string>
+     <string name="LanguageNameInEnglish">Spanish</string>
+diff --git a/TMessagesProj/src/main/res/values-it/strings.xml b/TMessagesProj/src/main/res/values-it/strings.xml
+index 3e7688d..515172e 100644
+--- a/TMessagesProj/src/main/res/values-it/strings.xml
++++ b/TMessagesProj/src/main/res/values-it/strings.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="AppName">Telegram</string>
+-    <string name="AppNameBeta">Telegram Beta</string>
++    <string name="AppName">HikeGram</string>
++    <string name="AppNameBeta">HikeGram</string>
+     <string name="LanguageName">Italiano</string>
+     <string name="English">Inglese</string>
+     <string name="LanguageNameInEnglish">Italian</string>
+diff --git a/TMessagesProj/src/main/res/values-ko/strings.xml b/TMessagesProj/src/main/res/values-ko/strings.xml
+index 6f75e2e..f0ab36c 100644
+--- a/TMessagesProj/src/main/res/values-ko/strings.xml
++++ b/TMessagesProj/src/main/res/values-ko/strings.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="AppName">텔레그램</string>
+-    <string name="AppNameBeta">텔레그램</string>
++    <string name="AppName">HikeGram</string>
++    <string name="AppNameBeta">HikeGram</string>
+     <string name="LanguageName">한국어</string>
+     <string name="English">영어</string>
+     <string name="LanguageNameInEnglish">한국어</string>
+diff --git a/TMessagesProj/src/main/res/values-nl/strings.xml b/TMessagesProj/src/main/res/values-nl/strings.xml
+index f3df87e..b65c847 100644
+--- a/TMessagesProj/src/main/res/values-nl/strings.xml
++++ b/TMessagesProj/src/main/res/values-nl/strings.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="AppName">Telegram</string>
+-    <string name="AppNameBeta">Telegram-bèta</string>
++    <string name="AppName">HikeGram</string>
++    <string name="AppNameBeta">HikeGram</string>
+     <string name="LanguageName">Nederlands</string>
+     <string name="English">Engels</string>
+     <string name="LanguageNameInEnglish">Dutch</string>
+diff --git a/TMessagesProj/src/main/res/values-pt-rBR/strings.xml b/TMessagesProj/src/main/res/values-pt-rBR/strings.xml
+index 03d0ba3..bf514c8 100644
+--- a/TMessagesProj/src/main/res/values-pt-rBR/strings.xml
++++ b/TMessagesProj/src/main/res/values-pt-rBR/strings.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="AppName">Telegram</string>
+-    <string name="AppNameBeta">Telegram Beta</string>
++    <string name="AppName">HikeGram</string>
++    <string name="AppNameBeta">HikeGram</string>
+     <string name="LanguageName">Português (Brasil)</string>
+     <string name="English">Inglês</string>
+     <string name="LanguageNameInEnglish">Portuguese (Brazil)</string>
+diff --git a/TMessagesProj/src/main/res/values-ru/strings.xml b/TMessagesProj/src/main/res/values-ru/strings.xml
+index 24c5629..83c62b4 100644
+--- a/TMessagesProj/src/main/res/values-ru/strings.xml
++++ b/TMessagesProj/src/main/res/values-ru/strings.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="AppName">Telegram</string>
+-    <string name="AppNameBeta">Telegram Beta</string>
++    <string name="AppName">HikeGram</string>
++    <string name="AppNameBeta">HikeGram</string>
+     <string name="LanguageName">Русский</string>
+     <string name="English">Английский</string>
+     <string name="LanguageNameInEnglish">Russian</string>
+diff --git a/TMessagesProj/src/main/res/values-uk/strings.xml b/TMessagesProj/src/main/res/values-uk/strings.xml
+index d468344..dfa3689 100644
+--- a/TMessagesProj/src/main/res/values-uk/strings.xml
++++ b/TMessagesProj/src/main/res/values-uk/strings.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="AppName">Telegram</string>
+-    <string name="AppNameBeta">Telegram Beta</string>
++    <string name="AppName">HikeGram</string>
++    <string name="AppNameBeta">HikeGram</string>
+     <string name="LanguageName">Українська</string>
+     <string name="English">Англійська</string>
+     <string name="LanguageNameInEnglish">Ukrainian</string>
+diff --git a/TMessagesProj/src/main/res/values/strings.xml b/TMessagesProj/src/main/res/values/strings.xml
+index db9de75..544cf45 100644
+--- a/TMessagesProj/src/main/res/values/strings.xml
++++ b/TMessagesProj/src/main/res/values/strings.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="AppName">Telegram</string>
+-    <string name="AppNameBeta">Telegram Beta</string>
++    <string name="AppName">HikeGram</string>
++    <string name="AppNameBeta">HikeGram</string>
+     <string name="LanguageName">English</string>
+     <string name="English">English</string>
+     <string name="LanguageNameInEnglish">English</string>
+diff --git a/TMessagesProj_App/build.gradle b/TMessagesProj_App/build.gradle
+index c581f3d..d0f3fe4 100644
+--- a/TMessagesProj_App/build.gradle
++++ b/TMessagesProj_App/build.gradle
+@@ -122,7 +122,7 @@ android {
+     productFlavors {
+         bundleAfat {
+             ndk {
+-                abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
++                abiFilters "arm64-v8a"
+             }
+             ext {
+                 abiVersionCode = 1
+@@ -131,7 +131,7 @@ android {
+         }
+         afat {
+             ndk {
+-                abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
++                abiFilters "arm64-v8a"
+             }
+             sourceSets.debug {
+                 manifest.srcFile '../TMessagesProj/config/debug/AndroidManifest_SDK23.xml'
+@@ -194,4 +194,4 @@ android {
+     }
+ }
+ 
+-apply plugin: 'com.google.gms.google-services'
++// apply plugin: 'com.google.gms.google-services'  (HikeGram: нужен свой Firebase-проект)
+diff --git a/gradle.properties b/gradle.properties
+index 4a5efa1..879b1f6 100644
+--- a/gradle.properties
++++ b/gradle.properties
+@@ -15,7 +15,7 @@
+ #Sat Mar 12 05:53:50 MSK 2016
+ APP_VERSION_CODE=7237
+ APP_VERSION_NAME=13.1.1
+-APP_PACKAGE=org.telegram.messenger
++APP_PACKAGE=com.hikegram.app
+ IS_PRIVATE=false
+ RELEASE_KEY_PASSWORD=android
+ RELEASE_KEY_ALIAS=androidkey
