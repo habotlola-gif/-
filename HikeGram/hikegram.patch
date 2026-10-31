@@ -1,9 +1,9 @@
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/HikeSettings.java b/TMessagesProj/src/main/java/org/telegram/messenger/HikeSettings.java
 new file mode 100644
-index 0000000..282ce7a
+index 0000000..e0a213b
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/HikeSettings.java
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,43 @@
 +package org.telegram.messenger;
 +
 +import android.content.Context;
@@ -32,6 +32,19 @@ index 0000000..282ce7a
 +
 +    public static void setKeepDeleted(boolean value) {
 +        prefs().edit().putBoolean("keepDeleted", value).apply();
++    }
++
++    public static final int QUICK_REPLY_SLOTS = 4;
++
++    private static final String[] DEFAULT_REPLIES = {"Ок", "Сейчас отвечу", "Позже напишу", "Спасибо!"};
++
++    /** Фраза быстрого ответа; пустая строка — ячейка не используется. */
++    public static String quickReply(int index) {
++        return prefs().getString("quick" + index, DEFAULT_REPLIES[index]);
++    }
++
++    public static void setQuickReply(int index, String value) {
++        prefs().edit().putString("quick" + index, value.trim()).apply();
 +    }
 +}
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
@@ -89,6 +102,276 @@ index 91faf80..5214da3 100644
                  if (deletedMessages == null) {
                      deletedMessages = new LongSparseArray<>();
                  }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 87afb39..788eadc 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -4009,6 +4009,8 @@ public class ChatActivity extends BaseFragment implements
+                     getSendMessagesHelper().sendMessage(SendMessagesHelper.SendMessageParams.of("/help", dialog_id, null, null, null, false, null, null, null, true, 0, 0, null, false));
+                 } else if (id == bot_settings) {
+                     getSendMessagesHelper().sendMessage(SendMessagesHelper.SendMessageParams.of("/settings", dialog_id, null, null, null, false, null, null, null, true, 0, 0, null, false));
++                } else if (id == HIKE_QUICK_REPLIES) {
++                    showHikeQuickReplies();
+                 } else if (id == search) {
+                     openSearchWithText(isSupportedTags() ? "" : null);
+                 } else if (id == translate) {
+@@ -4466,6 +4468,7 @@ public class ChatActivity extends BaseFragment implements
+             if (searchItem != null) {
+                 headerItem.lazilyAddSubItem(search, R.drawable.msg_search, LocaleController.getString(R.string.Search));
+             }
++            headerItem.lazilyAddSubItem(HIKE_QUICK_REPLIES, R.drawable.msg_send, "Быстрые ответы");
+             if (ChatObject.isBoostSupported(currentChat) && (getUserConfig().isPremium() || ChatObject.isBoosted(chatInfo) || ChatObject.hasAdminRights(currentChat))) {
+                 RLottieDrawable drawable = new RLottieDrawable(R.raw.boosts, dp(24), dp(24));
+                 headerItem.lazilyAddSubItem(boost_group, drawable, LocaleController.getString(ChatObject.isChannelAndNotMegaGroup(currentChat) ? R.string.BoostingBoostChannelMenu : R.string.BoostingBoostGroupMenu));
+@@ -35361,6 +35364,30 @@ public class ChatActivity extends BaseFragment implements
+         }).start();
+     }
+ 
++    private static final int HIKE_QUICK_REPLIES = 9100;
++
++    /** HikeGram: список фраз, нажатие на фразу сразу отправляет её в этот чат. */
++    private void showHikeQuickReplies() {
++        if (getParentActivity() == null) {
++            return;
++        }
++        final java.util.ArrayList<String> phrases = new java.util.ArrayList<>();
++        for (int i = 0; i < org.telegram.messenger.HikeSettings.QUICK_REPLY_SLOTS; i++) {
++            String phrase = org.telegram.messenger.HikeSettings.quickReply(i);
++            if (!phrase.isEmpty()) {
++                phrases.add(phrase);
++            }
++        }
++        if (phrases.isEmpty()) {
++            return;
++        }
++        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
++        builder.setTitle("Быстрые ответы");
++        builder.setItems(phrases.toArray(new CharSequence[0]), (dialog, which) -> getSendMessagesHelper().sendMessage(
++                SendMessagesHelper.SendMessageParams.of(phrases.get(which), dialog_id, null, null, null, false, null, null, null, true, 0, 0, null, false)));
++        showDialog(builder.create());
++    }
++
+     public void openSearchWithText(String text) {
+         boolean delay = false;
+         if (savedMessagesHint != null && savedMessagesHint.shown()) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/HikeSettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/HikeSettingsActivity.java
+new file mode 100644
+index 0000000..33c793a
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/ui/HikeSettingsActivity.java
+@@ -0,0 +1,186 @@
++package org.telegram.ui;
++
++import android.content.Context;
++import android.view.View;
++import android.view.ViewGroup;
++import android.widget.EditText;
++import android.widget.FrameLayout;
++
++import androidx.annotation.NonNull;
++import androidx.recyclerview.widget.LinearLayoutManager;
++import androidx.recyclerview.widget.RecyclerView;
++
++import org.telegram.messenger.HikeSettings;
++import org.telegram.messenger.LocaleController;
++import org.telegram.messenger.R;
++import org.telegram.ui.ActionBar.ActionBar;
++import org.telegram.ui.ActionBar.AlertDialog;
++import org.telegram.ui.ActionBar.BaseFragment;
++import org.telegram.ui.ActionBar.Theme;
++import org.telegram.ui.Cells.HeaderCell;
++import org.telegram.ui.Cells.TextCheckCell;
++import org.telegram.ui.Cells.TextInfoPrivacyCell;
++import org.telegram.ui.Cells.TextSettingsCell;
++import org.telegram.ui.Components.LayoutHelper;
++import org.telegram.ui.Components.RecyclerListView;
++
++/** Настройки HikeGram: призрак, сохранение удалённых, быстрые ответы. */
++public class HikeSettingsActivity extends BaseFragment {
++    private static final int TYPE_HEADER = 0;
++    private static final int TYPE_CHECK = 1;
++    private static final int TYPE_VALUE = 2;
++    private static final int TYPE_INFO = 3;
++
++    private static final int ROW_PRIVACY_HEADER = 0;
++    private static final int ROW_GHOST = 1;
++    private static final int ROW_KEEP_DELETED = 2;
++    private static final int ROW_PRIVACY_INFO = 3;
++    private static final int ROW_QUICK_HEADER = 4;
++    private static final int ROW_QUICK_FIRST = 5;
++    private static final int ROW_QUICK_INFO = ROW_QUICK_FIRST + HikeSettings.QUICK_REPLY_SLOTS;
++    private static final int ROW_COUNT = ROW_QUICK_INFO + 1;
++
++    private ListAdapter adapter;
++
++    @Override
++    public View createView(Context context) {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back);
++        actionBar.setAllowOverlayTitle(true);
++        actionBar.setTitle("HikeGram");
++        actionBar.setActionBarMenuOnItemClick(new ActionBar.ActionBarMenuOnItemClick() {
++            @Override
++            public void onItemClick(int id) {
++                if (id == -1) {
++                    finishFragment();
++                }
++            }
++        });
++
++        FrameLayout frameLayout = new FrameLayout(context);
++        frameLayout.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray));
++        fragmentView = frameLayout;
++
++        RecyclerListView listView = new RecyclerListView(context);
++        listView.setSections();
++        actionBar.setAdaptiveBackground(listView);
++        listView.setLayoutManager(new LinearLayoutManager(context));
++        listView.setVerticalScrollBarEnabled(false);
++        listView.setAdapter(adapter = new ListAdapter(context));
++        listView.setOnItemClickListener((view, position) -> onRowClicked(position));
++        frameLayout.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
++        return fragmentView;
++    }
++
++    private void onRowClicked(int position) {
++        if (position == ROW_GHOST) {
++            HikeSettings.setGhostMode(!HikeSettings.ghostMode());
++            adapter.notifyItemChanged(position);
++        } else if (position == ROW_KEEP_DELETED) {
++            HikeSettings.setKeepDeleted(!HikeSettings.keepDeleted());
++            adapter.notifyItemChanged(position);
++        } else if (position >= ROW_QUICK_FIRST && position < ROW_QUICK_INFO) {
++            editQuickReply(position - ROW_QUICK_FIRST);
++        }
++    }
++
++    private void editQuickReply(int index) {
++        if (getParentActivity() == null) {
++            return;
++        }
++        EditText edit = new EditText(getParentActivity());
++        edit.setText(HikeSettings.quickReply(index));
++        edit.setSingleLine();
++        edit.setHint("Пусто — фраза не показывается");
++        edit.setTextColor(Theme.getColor(Theme.key_dialogTextBlack));
++        edit.setHintTextColor(Theme.getColor(Theme.key_dialogTextGray2));
++        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
++        builder.setTitle("Фраза " + (index + 1));
++        builder.setView(edit);
++        builder.setPositiveButton(LocaleController.getString(R.string.Save), (dialog, which) -> {
++            HikeSettings.setQuickReply(index, edit.getText().toString());
++            adapter.notifyItemChanged(ROW_QUICK_FIRST + index);
++        });
++        builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null);
++        showDialog(builder.create());
++    }
++
++    private class ListAdapter extends RecyclerListView.SelectionAdapter {
++        private final Context context;
++
++        private ListAdapter(Context context) {
++            this.context = context;
++        }
++
++        @Override
++        public int getItemCount() {
++            return ROW_COUNT;
++        }
++
++        @Override
++        public boolean isEnabled(RecyclerView.ViewHolder holder) {
++            int type = holder.getItemViewType();
++            return type == TYPE_CHECK || type == TYPE_VALUE;
++        }
++
++        @NonNull
++        @Override
++        public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
++            View view;
++            if (viewType == TYPE_HEADER) {
++                view = new HeaderCell(context);
++            } else if (viewType == TYPE_CHECK) {
++                view = new TextCheckCell(context);
++            } else if (viewType == TYPE_VALUE) {
++                view = new TextSettingsCell(context);
++            } else {
++                view = new TextInfoPrivacyCell(context);
++            }
++            view.setLayoutParams(new RecyclerView.LayoutParams(
++                    RecyclerView.LayoutParams.MATCH_PARENT,
++                    RecyclerView.LayoutParams.WRAP_CONTENT
++            ));
++            return new RecyclerListView.Holder(view);
++        }
++
++        @Override
++        public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
++            int type = holder.getItemViewType();
++            if (type == TYPE_HEADER) {
++                ((HeaderCell) holder.itemView).setText(position == ROW_PRIVACY_HEADER ? "Приватность" : "Быстрые ответы");
++            } else if (type == TYPE_CHECK) {
++                TextCheckCell cell = (TextCheckCell) holder.itemView;
++                if (position == ROW_GHOST) {
++                    cell.setTextAndCheck("Режим призрака", HikeSettings.ghostMode(), true);
++                } else {
++                    cell.setTextAndCheck("Сохранять удалённые сообщения", HikeSettings.keepDeleted(), false);
++                }
++            } else if (type == TYPE_VALUE) {
++                int index = position - ROW_QUICK_FIRST;
++                String value = HikeSettings.quickReply(index);
++                ((TextSettingsCell) holder.itemView).setTextAndValue(
++                        "Фраза " + (index + 1),
++                        value.isEmpty() ? "—" : value,
++                        index < HikeSettings.QUICK_REPLY_SLOTS - 1
++                );
++            } else {
++                ((TextInfoPrivacyCell) holder.itemView).setText(position == ROW_PRIVACY_INFO
++                        ? "Призрак: не отправляются статус «в сети» и «печатает». Удалённые собеседником сообщения остаются у вас."
++                        : "В чате откройте меню (⋮) и выберите «Быстрые ответы» — фраза отправится одним нажатием.");
++            }
++        }
++
++        @Override
++        public int getItemViewType(int position) {
++            if (position == ROW_PRIVACY_HEADER || position == ROW_QUICK_HEADER) {
++                return TYPE_HEADER;
++            }
++            if (position == ROW_GHOST || position == ROW_KEEP_DELETED) {
++                return TYPE_CHECK;
++            }
++            if (position >= ROW_QUICK_FIRST && position < ROW_QUICK_INFO) {
++                return TYPE_VALUE;
++            }
++            return TYPE_INFO;
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
+index d56c57b..9981d0c 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
+@@ -757,6 +757,10 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
+         if (items.get(items.size() - 1).viewType != UniversalAdapter.VIEW_TYPE_SHADOW)
+             items.add(UItem.asShadow(null));
+ 
++        items.add(UItem.asHeader("HikeGram"));
++        items.add(SettingCell.Factory.of(40, 0xFFE8763A, 0xFFD2511A, 0, "Настройки HikeGram"));
++        items.add(UItem.asShadow(null));
++
+         items.add(UItem.asHeader(getString(R.string.SettingsHelp)));
+         items.add(SettingCell.Factory.of(17, IconBackgroundColors.ORANGE.top, IconBackgroundColors.ORANGE.bottom, R.drawable.settings_ask, getString(R.string.AskAQuestion)));
+         items.add(SettingCell.Factory.of(18, IconBackgroundColors.BLUE_LIGHT.top, IconBackgroundColors.BLUE_LIGHT.bottom, R.drawable.settings_faq, getString(R.string.TelegramFAQ)));
+@@ -919,6 +923,10 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
+                 presentFragment(new AudioRecorderSettingsActivity());
+                 break;
+             }
++            case 40: {
++                presentFragment(new HikeSettingsActivity());
++                break;
++            }
+         }
+     }
+ 
 diff --git a/TMessagesProj/src/main/res/values-ar/strings.xml b/TMessagesProj/src/main/res/values-ar/strings.xml
 index 8b87004..d46dbc8 100644
 --- a/TMessagesProj/src/main/res/values-ar/strings.xml
