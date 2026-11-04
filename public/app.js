@@ -300,6 +300,28 @@
       h('div', {}, h('h1', { text: title }), sub ? h('p', { text: sub }) : null));
   }
 
+  // Выбор кабинета (общий для отчётов, ведомости и удержаний). По умолчанию — первый добавленный.
+  async function cabinetField() {
+    let cabinets = [];
+    try { ({ cabinets } = await api('/api/cabinets')); } catch { /* без списка */ }
+    const ids = cabinets.map((c) => c.id);
+    if (!(state.cabinet === 'all' && cabinets.length > 1) && !ids.includes(state.cabinet)) state.cabinet = ids[0] || '';
+    if (cabinets.length <= 1) return null;
+    const sel = h('select', { class: 'input', onchange: () => {
+      state.cabinet = sel.value;
+      store.set('cabinet', sel.value);
+      renderApp();
+    } },
+    ...cabinets.map((c) => h('option', { value: c.id, text: c.name, selected: c.id === state.cabinet })),
+    h('option', { value: 'all', text: 'Все кабинеты', selected: state.cabinet === 'all' }));
+    return h('label', { class: 'field' }, h('span', { text: 'Кабинет' }), sel);
+  }
+
+  function withCabinet(params) {
+    if (state.cabinet) params.set('cabinet', state.cabinet);
+    return params;
+  }
+
   // Администратор выбирает: себя, сотрудника или любого водителя из WB за период.
   // ИП — водителя своего кабинета из WB.
   async function employeeSelect(onChange) {
@@ -309,7 +331,7 @@
       admin ? h('option', { value: '', text: `${state.me.name} (я)` }) : null);
     const [usersRes, driversRes] = await Promise.allSettled([
       admin ? api('/api/users') : Promise.resolve({ users: [] }),
-      api(`/api/drivers?${new URLSearchParams({ from: state.period.from, to: state.period.to })}`),
+      api(`/api/drivers?${withCabinet(new URLSearchParams({ from: state.period.from, to: state.period.to }))}`),
     ]);
     if (usersRes.status === 'fulfilled') {
       const others = usersRes.value.users.filter((u) => u.id !== state.me.id);
@@ -347,8 +369,9 @@
     const body = h('div');
     const card = h('div', { class: 'card' }, head('📄', 'Отчеты', 'Период и прибыль'));
     main.append(card);
+    const cabSel = isManager() ? await cabinetField() : null;
     const sel = await employeeSelect(load);
-    card.append(...[sel, periodField(() => renderApp()), body].filter(Boolean));
+    card.append(...[cabSel, sel, periodField(() => renderApp()), body].filter(Boolean));
 
     async function load() {
       fill(body, h('div', { class: 'status', text: 'Загружаю…' }));
@@ -356,7 +379,7 @@
         const q = new URLSearchParams({ from: state.period.from, to: state.period.to });
         employeeQuery(q);
         q.set('holds', state.deductHolds ? '1' : '0');
-        const r = await api(`/api/report?${q}`);
+        const r = await api(`/api/report?${withCabinet(q)}`);
         const copyBtn = h('button', { class: 'btn', type: 'button', text: 'Копировать отчет', onclick: async () => {
           copyBtn.textContent = (await copyText(r.text)) ? 'Скопировано' : 'Не удалось скопировать';
           setTimeout(() => { copyBtn.textContent = 'Копировать отчет'; }, 2000);
@@ -398,8 +421,10 @@
   async function renderHolds(main) {
     const tab = state.holdsTab || 'wb';
     const content = h('div');
+    const cabSel = isManager() ? await cabinetField() : null;
     main.append(h('div', { class: 'card' },
-      head('🧾', 'Удержания WB', tab === 'wb' ? 'Брак, недоставленные коробки и другие' : 'Штрафы по путевым листам'),
+      head('🧾', 'Удержания WB', tab === 'wb' ? 'Брак, утеря, претензии' : 'Штрафы по путевым листам'),
+      cabSel,
       periodField(() => renderApp()),
       h('div', { class: 'row' },
         h('button', { class: `btn small ${tab === 'wb' ? 'active' : ''}`, type: 'button', text: 'Удержания WB',
@@ -411,7 +436,7 @@
 
     fill(content, h('div', { class: 'status', text: 'Загружаю удержания из WB…' }));
     try {
-      const r = await api(`/api/holds?${new URLSearchParams({ from: state.period.from, to: state.period.to })}`);
+      const r = await api(`/api/holds?${withCabinet(new URLSearchParams({ from: state.period.from, to: state.period.to }))}`);
       const kind = h('select', { class: 'input', onchange: () => draw() }, h('option', { value: '', text: 'Все типы' }),
         ...r.byType.map((t) => h('option', { value: t.type, text: t.type })));
       const list = h('div');
@@ -452,7 +477,7 @@
     body.append(h('div', { class: 'status', text: 'Загружаю…' }));
     try {
       const q = new URLSearchParams({ from: state.period.from, to: state.period.to });
-      const r = await api(`/api/fines?${q}`);
+      const r = await api(`/api/fines?${withCabinet(q)}`);
       fill(body, 
         ...r.warnings.map((w) => msg(w, 'warn')),
         h('div', { class: 'stat' }, h('div', { class: 'label', text: 'Сумма удержаний' }), h('div', { class: 'value', text: rub(r.total) })),
@@ -603,9 +628,9 @@
 
     try {
       const { cabinets } = await api('/api/cabinets');
-      if (cabinets.length === 1) state.cabinet = cabinets[0].id;
+      // Путевые — всегда по одному кабинету: по умолчанию первый добавленный.
+      if (!cabinets.some((c) => c.id === state.cabinet)) state.cabinet = cabinets.length ? cabinets[0].id : '';
       for (const c of cabinets) cab.append(h('option', { value: c.id, text: c.name, selected: c.id === state.cabinet }));
-      if (!cabinets.some((c) => c.id === state.cabinet)) state.cabinet = '';
       if (!cabinets.length) status.textContent = 'Кабинеты ещё не добавлены. Администратор добавляет их в настройках.';
     } catch (e) { fill(status, msg(e.message)); }
 
@@ -664,8 +689,10 @@
   async function renderSummary(main) {
     const body = h('div');
     const pct = h('input', { class: 'input', type: 'number', min: '0', max: '100', step: '0.01' });
+    const cabSel = await cabinetField();
     main.append(h('div', { class: 'card' },
       head('📊', 'Ведомость', 'Все водители за период'),
+      cabSel,
       h('div', { class: 'grid2' }, periodField(() => renderApp()),
         h('label', { class: 'field' }, h('span', { text: 'Комиссия, %' }), pct)),
       h('button', { class: 'btn light', type: 'button', text: 'Рассчитать', onclick: load })), body);
@@ -674,8 +701,8 @@
     async function load() {
       fill(body, h('div', { class: 'status', text: 'Загружаю…' }));
       try {
-        const r = await api(`/api/summary?${new URLSearchParams({ from: state.period.from, to: state.period.to,
-          percent: pct.value, holds: state.deductHolds ? '1' : '0' })}`);
+        const r = await api(`/api/summary?${withCabinet(new URLSearchParams({ from: state.period.from, to: state.period.to,
+          percent: pct.value, holds: state.deductHolds ? '1' : '0' }))}`);
         const t = r.totals;
         const tbody = h('tbody');
         for (const d of r.drivers) {

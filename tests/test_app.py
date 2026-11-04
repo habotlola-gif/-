@@ -733,6 +733,19 @@ class ServerTest(unittest.TestCase):
                              ("/api/raw?date=2026-10-02&cabinet=" + cab_a, "GET")):
             self.assertEqual(self.req(owner, path, method, {} if method != "GET" else None)[0], 403, path)
 
+        # Выбор кабинета: администратор видит выбранный, «все» — оба; ИП чужой кабинет не подставит.
+        _, sm = self.req(admin, f"/api/summary?{period}&cabinet={cab_b}")
+        self.assertEqual([d["driverName"] for d in sm["drivers"]], ["Водитель Б"])
+        _, sm = self.req(admin, f"/api/summary?{period}&cabinet=all")
+        self.assertEqual(sorted(d["driverName"] for d in sm["drivers"]), ["Водитель А", "Водитель Б"])
+        _, rep = self.req(admin, f"/api/report?{period}&cabinet={cab_a}&driver=" + urllib.parse.quote("Водитель Б"))
+        self.assertEqual(rep["sum"], 0)
+        _, dr = self.req(admin, f"/api/drivers?{period}&cabinet={cab_b}")
+        self.assertEqual([d["driverName"] for d in dr["drivers"]], ["Водитель Б"])
+        self.assertEqual(self.req(owner, f"/api/summary?{period}&cabinet={cab_b}")[0], 400)
+        self.assertEqual(self.req(owner, f"/api/holds?{period}&cabinet={cab_b}")[0], 400)
+        self.assertEqual(self.req(admin, f"/api/summary?{period}&cabinet=deadbeef")[0], 400)
+
         # Кабинет удалили — ИП больше ничего не видит.
         self.req(admin, f"/api/cabinets/{cab_a}", "DELETE")
         self.assertEqual(self.req(owner, f"/api/summary?{period}")[0], 403)

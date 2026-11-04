@@ -668,6 +668,16 @@ def make_handler(app):
                 raise bad("FORBIDDEN", "ИП не привязан к кабинету. Обратитесь к администратору.", 403)
             return [u["cabinetId"]]
 
+        def chosen(self, u, q):
+            """Кабинеты для страницы: выбранный в ?cabinet= (в пределах доступных) или все доступные."""
+            allowed = self.scope(u)
+            cid = (q.get("cabinet") or [""])[0]
+            if not cid or cid == "all":
+                return allowed
+            if not db.cabinet(cid) or (allowed is not None and cid not in allowed):
+                raise bad("BAD_CABINET", "Кабинет не найден.")
+            return [cid]
+
         def client_ip(self):
             if os.environ.get("TRUST_PROXY") and self.headers.get("X-Forwarded-For"):
                 return self.headers["X-Forwarded-For"].split(",")[0].strip()
@@ -1012,13 +1022,13 @@ def make_handler(app):
             user = self.target_user(q)
             date_from, date_to = self.period(q)
             deduct_holds = (q.get("holds") or ["1"])[0] != "0"
-            return app.employee_report(user, date_from, date_to, deduct_holds, self.scope(me))
+            return app.employee_report(user, date_from, date_to, deduct_holds, self.chosen(me, q))
 
         def api_fines(self, q, _):
             """Удержания WB: путевые со штрафами за период."""
             u = self.need_user()
             date_from, date_to = self.period(q)
-            trips, fetched_at, warnings = app.load_trips(date_from, date_to, self.scope(u))
+            trips, fetched_at, warnings = app.load_trips(date_from, date_to, self.chosen(u, q))
             rows = []
             for t in trips:
                 if t.get("isDeleted") or (u["role"] == "driver" and not user_matches(u, t)):
@@ -1061,7 +1071,7 @@ def make_handler(app):
 
         def api_summary(self, q, _):
             u = self.need_manager()
-            allowed = self.scope(u)
+            allowed = self.chosen(u, q)
             date_from, date_to = self.period(q)
             raw = (q.get("percent") or [None])[0]
             percent = db.data["settings"]["percent"] if raw is None else parse_percent(raw)
@@ -1077,7 +1087,7 @@ def make_handler(app):
             """ФИО водителей из WB за период — для выбора в отчёте и привязки сотрудников."""
             u = self.need_manager()
             date_from, date_to = self.period(q)
-            trips, _, _ = app.load_trips(date_from, date_to, self.scope(u))
+            trips, _, _ = app.load_trips(date_from, date_to, self.chosen(u, q))
             seen = {}
             for t in trips:
                 name = t.get("driverName")
@@ -1105,11 +1115,11 @@ def make_handler(app):
         def api_holds(self, q, _):
             u = self.need_user()
             date_from, date_to = self.period(q)
-            allowed = self.scope(u)
+            allowed = self.chosen(u, q)
             if u["role"] in ("admin", "owner"):
                 items, at, warnings = app.load_holds(date_from, date_to, allowed)
             else:
-                items, at, warnings = app.holds_for(u, date_from, date_to)
+                items, at, warnings = app.holds_for(u, date_from, date_to, allowed)
             by_type = {}
             for i in items:
                 if i["refunded"]:
