@@ -780,6 +780,52 @@ class ServerTest(unittest.TestCase):
         self.assertIn("Минус комиссия (20%): 20,00", text)
         self.assertIn("После комиссии: 80,00", text)
 
+    def test_owner_with_two_cabinets(self):
+        admin, cab_a, jwt_a = self.setup_admin()
+        jwt_b = make_jwt(2000000001)
+        cab_b = self.req(admin, "/api/cabinets", "POST", {"name": "ИП Б", "value": jwt_b, "supplierIds": "222"})[1]["id"]
+        cab_c = self.req(admin, "/api/cabinets", "POST", {"name": "ИП В", "value": make_jwt(2000000002), "supplierIds": "333"})[1]["id"]
+
+        def fetch(f, t, tok):
+            name = {jwt_a: "А", jwt_b: "Б"}.get(tok, "В")
+            return [trip(id=ord(name), driverId=ord(name), driverName=f"Водитель {name}", totalPrice=1000,
+                         closeDt="2026-10-02T10:00:00")]
+
+        self.app.cache.fetcher = fetch
+        self.app.cache.clear()
+        status, u = self.req(admin, "/api/users", "POST", {"name": "Менеджер", "login": "manager", "password": "pass123",
+                                                           "role": "owner", "cabinetIds": [cab_a, cab_b]})
+        self.assertEqual((status, u["cabinetIds"]), (200, [cab_a, cab_b]))
+        self.assertEqual(self.req(admin, "/api/users", "POST", {"name": "x", "login": "xxx", "password": "pass123",
+                                                                "role": "owner", "cabinetIds": []})[0], 400)
+        owner = self.client()
+        self.req(owner, "/api/login", "POST", {"login": "manager", "password": "pass123"})
+        period = "from=2026-10-01&to=2026-10-05"
+        self.assertEqual(sorted(c["id"] for c in self.req(owner, "/api/cabinets")[1]["cabinets"]), sorted([cab_a, cab_b]))
+        _, sm = self.req(owner, f"/api/summary?{period}")
+        self.assertEqual(sorted(d["driverName"] for d in sm["drivers"]), ["Водитель А", "Водитель Б"])
+        _, sm = self.req(owner, f"/api/summary?{period}&cabinet={cab_b}")
+        self.assertEqual([d["driverName"] for d in sm["drivers"]], ["Водитель Б"])
+        self.assertEqual(self.req(owner, f"/api/summary?{period}&cabinet={cab_c}")[0], 400)
+
+        # Убрали кабинет у сотрудника — он его больше не видит; удалили кабинет — пропадает из списка.
+        self.req(admin, f"/api/users/{u['id']}", "PUT", {"cabinetIds": [cab_b]})
+        _, sm = self.req(owner, f"/api/summary?{period}")
+        self.assertEqual([d["driverName"] for d in sm["drivers"]], ["Водитель Б"])
+        self.req(admin, f"/api/cabinets/{cab_b}", "DELETE")
+        self.assertEqual(self.req(owner, f"/api/summary?{period}")[0], 403)
+
+    def test_old_single_cabinet_user_still_works(self):
+        admin, cab_a, _ = self.setup_admin()
+        salt, digest = app.hash_password("pass123")
+        self.app.db.users().append({"id": "0ld0ld00", "login": "oldip", "name": "Старый ИП", "role": "owner",
+                                    "cabinetId": cab_a, "salt": salt, "hash": digest})
+        owner = self.client()
+        self.req(owner, "/api/login", "POST", {"login": "oldip", "password": "pass123"})
+        _, me = self.req(owner, "/api/me")
+        self.assertEqual(me["user"]["cabinetIds"], [cab_a])
+        self.assertEqual(self.req(owner, "/api/summary?from=2026-10-01&to=2026-10-05")[0], 200)
+
     def test_static(self):
         with urllib.request.urlopen(self.base + "/") as r:
             self.assertIn("LogisticaWB", r.read().decode())

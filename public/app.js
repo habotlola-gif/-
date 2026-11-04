@@ -885,24 +885,30 @@
     const list = h('div');
     let cabinets = [];
     try { ({ cabinets } = await api('/api/cabinets')); } catch { /* без списка */ }
-    const cabName = (id) => (cabinets.find((c) => c.id === id) || {}).name || 'кабинет не выбран';
-    const cabSelect = (value) => h('select', { class: 'input' }, h('option', { value: '', text: 'Выберите кабинет' }),
-      ...cabinets.map((c) => h('option', { value: c.id, text: c.name, selected: c.id === value })));
+    const cabNames = (ids) => ids.map((id) => (cabinets.find((c) => c.id === id) || {}).name).filter(Boolean).join(', ')
+      || 'кабинет не выбран';
+    // Галочки кабинетов: у ИП может быть несколько кабинетов.
+    const cabChecks = (selected) => {
+      const boxes = cabinets.map((c) => ({ id: c.id, el: h('input', { type: 'checkbox', checked: selected.includes(c.id) }) }));
+      const node = h('div', {}, ...boxes.map((b) => h('label', { class: 'row check' }, b.el,
+        h('span', { text: (cabinets.find((c) => c.id === b.id) || {}).name }))));
+      return { node, value: () => boxes.filter((b) => b.el.checked).map((b) => b.id) };
+    };
 
     const f = {
       name: h('input', { class: 'input', placeholder: 'ИП Иванов Иван' }),
       login: h('input', { class: 'input', autocomplete: 'off' }),
       password: h('input', { class: 'input', type: 'password', autocomplete: 'new-password' }),
       role: h('select', { class: 'input' },
-        h('option', { value: 'owner', text: 'ИП — видит свой кабинет' }),
+        h('option', { value: 'owner', text: 'ИП — видит свои кабинеты' }),
         h('option', { value: 'admin', text: 'Администратор — всё и настройки' }),
         h('option', { value: 'driver', text: 'Водитель — только себя' })),
-      cabinetId: cabSelect(cabinets.length === 1 ? cabinets[0].id : ''),
       driverName: h('input', { class: 'input', list: 'wb-drivers', placeholder: 'Как в WB, если отличается от ФИО' }),
       driverId: h('input', { class: 'input', placeholder: 'Необязательно' }),
       percent: h('input', { class: 'input', type: 'number', min: '0', max: '100', step: '0.01', placeholder: 'Общий' }),
     };
-    const cabField = h('label', { class: 'field' }, h('span', { text: 'Кабинет' }), f.cabinetId);
+    const newCabs = cabChecks(cabinets.length === 1 ? [cabinets[0].id] : []);
+    const cabField = h('div', { class: 'field' }, h('span', { text: 'Кабинеты' }), newCabs.node);
     const dl = h('datalist', { id: 'wb-drivers' });
     const loadDrivers = h('button', { class: 'btn small', type: 'button', text: 'Подтянуть ФИО из WB за 30 дней', onclick: async () => {
       loadDrivers.disabled = true;
@@ -928,7 +934,7 @@
 
     box.append(h('div', { class: 'card' },
       h('div', { class: 'label', text: 'Пользователи' }),
-      h('p', { class: 'small muted', text: 'ИП входит по логину и паролю и видит всё по своему кабинету: отчёты, ведомость, путевые, удержания, остатки. Ключей и настроек он не видит.' }),
+      h('p', { class: 'small muted', text: 'ИП входит по логину и паролю и видит всё по своим кабинетам (одному или нескольким): отчёты, ведомость, путевые, удержания, остатки. Ключей и настроек он не видит.' }),
       list,
       h('details', {}, h('summary', { text: '+ Добавить пользователя' }),
         h('label', { class: 'field' }, h('span', { text: 'Имя (ФИО или название ИП)' }), f.name),
@@ -941,6 +947,7 @@
         h('button', { class: 'btn light', type: 'button', text: 'Добавить', onclick: async () => {
           try {
             const body = Object.fromEntries(Object.entries(f).map(([k, el]) => [k, el.value]));
+            body.cabinetIds = body.role === 'owner' ? newCabs.value() : [];
             await api('/api/users', { method: 'POST', body });
             [f.name, f.login, f.password, f.driverName, f.driverId, f.percent].forEach((el) => { el.value = ''; });
             fill(out, msg('Пользователь добавлен. Передайте ему адрес сайта, логин и пароль.', 'ok'));
@@ -953,7 +960,7 @@
       const { users } = await api('/api/users');
       fill(list, ...users.map((u) => {
         const pw = h('input', { class: 'input', type: 'password', placeholder: 'Новый пароль', autocomplete: 'new-password' });
-        const cab = cabSelect(u.cabinetId);
+        const cab = cabChecks(u.cabinetIds || []);
         const pc = h('input', { class: 'input', type: 'number', min: '0', max: '100', step: '0.01', placeholder: 'Общий', value: u.percent ?? '' });
         const dn = h('input', { class: 'input', list: 'wb-drivers', value: u.driverName || '', placeholder: 'Как в ФИО' });
         const di = h('input', { class: 'input', value: u.driverId || '', placeholder: 'Не задан' });
@@ -961,9 +968,9 @@
         return h('div', { class: 'list-item' },
           h('div', { class: 'row between' },
             h('span', { class: 't', text: u.name }),
-            h('span', { class: 'small muted', text: `${u.login} · ${role}${u.role === 'owner' ? ` · ${cabName(u.cabinetId)}` : ''}` })),
+            h('span', { class: 'small muted', text: `${u.login} · ${role}${u.role === 'owner' ? ` · ${cabNames(u.cabinetIds || [])}` : ''}` })),
           h('details', {}, h('summary', { text: 'Изменить' }),
-            u.role === 'owner' ? h('label', { class: 'field' }, h('span', { text: 'Кабинет' }), cab) : null,
+            u.role === 'owner' ? h('div', { class: 'field' }, h('span', { text: 'Кабинеты' }), cab.node) : null,
             u.role === 'driver' ? h('div', { class: 'grid2' },
               h('label', { class: 'field' }, h('span', { text: 'ФИО в WB' }), dn),
               h('label', { class: 'field' }, h('span', { text: 'ID водителя WB' }), di)) : null,
@@ -974,7 +981,7 @@
               h('button', { class: 'btn small light', type: 'button', text: 'Сохранить', onclick: async () => {
                 try {
                   const body = {};
-                  if (u.role === 'owner') body.cabinetId = cab.value;
+                  if (u.role === 'owner') body.cabinetIds = cab.value();
                   if (u.role === 'driver') Object.assign(body, { driverName: dn.value, driverId: di.value, percent: pc.value });
                   if (pw.value) body.password = pw.value;
                   await api(`/api/users/${u.id}`, { method: 'PUT', body });

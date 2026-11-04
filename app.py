@@ -154,7 +154,16 @@ class Db:
 
 
 def public_user(u):
-    return {k: u.get(k) for k in ("id", "login", "name", "role", "driverName", "driverId", "percent", "cabinetId")}
+    return {**{k: u.get(k) for k in ("id", "login", "name", "role", "driverName", "driverId", "percent")},
+            "cabinetIds": user_cabinet_ids(u)}
+
+
+def user_cabinet_ids(u):
+    """Кабинеты пользователя-ИП. Раньше хранился один (cabinetId) — читаем и его."""
+    ids = u.get("cabinetIds")
+    if ids is None:
+        ids = [u["cabinetId"]] if u.get("cabinetId") else []
+    return list(ids)
 
 
 ROLES = ("admin", "owner", "driver")  # администратор, ИП (свой кабинет), водитель (только себя)
@@ -664,9 +673,10 @@ def make_handler(app):
             """Кабинеты, доступные пользователю; None — все."""
             if u["role"] != "owner":
                 return None
-            if not db.cabinet(u.get("cabinetId")):
+            ids = [cid for cid in user_cabinet_ids(u) if db.cabinet(cid)]
+            if not ids:
                 raise bad("FORBIDDEN", "ИП не привязан к кабинету. Обратитесь к администратору.", 403)
-            return [u["cabinetId"]]
+            return ids
 
         def chosen(self, u, q):
             """Кабинеты для страницы: выбранный в ?cabinet= (в пределах доступных) или все доступные."""
@@ -803,10 +813,22 @@ def make_handler(app):
                 if r not in ROLES:
                     raise bad("BAD_USER", "Неверная роль.")
                 u["role"] = r
-            if "cabinetId" in b or not existing:
-                u["cabinetId"] = str(b.get("cabinetId") or "") or None
-            if u["role"] == "owner" and not db.cabinet(u.get("cabinetId")):
-                raise bad("BAD_USER", "Выберите кабинет ИП.")
+            if "cabinetIds" in b or "cabinetId" in b or not existing:
+                raw = b.get("cabinetIds")
+                if raw is None:
+                    raw = [b["cabinetId"]] if b.get("cabinetId") else []
+                if not isinstance(raw, list):
+                    raw = [raw]
+                ids = []
+                for cid in (str(x) for x in raw if x):
+                    if not db.cabinet(cid):
+                        raise bad("BAD_USER", "Кабинет не найден.")
+                    if cid not in ids:
+                        ids.append(cid)
+                u["cabinetIds"] = ids
+                u.pop("cabinetId", None)
+            if u["role"] == "owner" and not any(db.cabinet(c) for c in user_cabinet_ids(u)):
+                raise bad("BAD_USER", "Выберите хотя бы один кабинет ИП.")
             for f in ("driverName", "driverId"):
                 if f in b or not existing:
                     v = str(b.get(f) or "").strip()
@@ -961,9 +983,9 @@ def make_handler(app):
             app.cache.clear(cid)
             with db.lock:
                 db.data["cabinets"] = [c for c in db.cabinets() if c["id"] != cid]
-                for u in db.users():  # ИП удалённого кабинета больше ничего не видит
-                    if u.get("cabinetId") == cid:
-                        u["cabinetId"] = None
+                for u in db.users():  # у ИП пропадает удалённый кабинет
+                    u["cabinetIds"] = [c for c in user_cabinet_ids(u) if c != cid]
+                    u.pop("cabinetId", None)
                 db.save()
             return {"ok": True}
 
@@ -1168,7 +1190,11 @@ def make_handler(app):
             items = data["items"]
             cabs = [c for c in db.cabinets() if allowed is None or c["id"] in allowed]
             if allowed is not None:
-                items = remains_of_cabinet(items, cabs[0])
+                mine = {}
+                for cab in cabs:
+                    for i in remains_of_cabinet(items, cab):
+                        mine[(i.get("officeId"), i.get("routeId"))] = i
+                items = list(mine.values())
             items = sorted(items, key=lambda i: -(i.get("shk") or 0))
             carriers = sorted({c["name"] for i in items for c in i["carrierList"]})
             status = [{"cabinet": c["name"], "ok": iso_time(st.get("ok")), "error": st.get("error"),
