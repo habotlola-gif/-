@@ -66,6 +66,10 @@ public final class TargetEspRenderer {
                 TargetEspRenderer.renderArrows(ui, settings, entity, base, time, camera, color, glowStrength);
             } else if (settings.isRing()) {
                 TargetEspRenderer.renderRing(ui, settings, entity, base, time, color, glowStrength);
+            } else if (settings.isCrystals()) {
+                boolean visible = client.player != null && client.player.hasLineOfSight(entity);
+                CrystalsEsp.render(ui, entity, base, settings.speed.getFloat(), settings.size.getFloat() / 100.0f,
+                        glowStrength, camera, pixelsPerUnit, color, alpha, partialTick, visible);
             } else if (settings.isLightning()) {
                 LightningEsp.render(ui, settings, entity, base, time, color, partialTick, alpha);
             } else {

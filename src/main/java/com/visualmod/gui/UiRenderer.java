@@ -118,6 +118,16 @@ public final class UiRenderer {
         this.shape(x, y, size, size, size / 2, Math.max(1, blur), color);
     }
 
+    /** Залитый треугольник в пиксельных координатах. */
+    public void triangle(float x1, float y1, float x2, float y2, float x3, float y3, int color) {
+        int c = this.applyOpacity(color, 1.0f);
+        if (c >>> 24 == 0) {
+            return;
+        }
+        ScreenRectangle scissor = ((GuiGraphicsAccessor)this.graphics).visualmod$getScissorStack().peek();
+        this.graphics.guiRenderState.submitGuiElement((GuiElementRenderState)PolyRenderState.create((Matrix3x2fc)new Matrix3x2f((Matrix3x2fc)this.graphics.pose()), x1, y1, x2, y2, x3, y3, c, scissor));
+    }
+
     public void capsule(float x1, float y1, float x2, float y2, float thickness, int blur, int color) {
         float length = (float)Math.hypot(x2 - x1, y2 - y1);
         int t = Math.max(1, Math.round(thickness));
