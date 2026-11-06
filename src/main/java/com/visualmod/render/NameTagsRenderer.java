@@ -10,6 +10,8 @@ import java.util.Comparator;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.PlayerFaceRenderer;
+import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
@@ -80,7 +82,73 @@ public final class NameTagsRenderer {
         }
     }
 
+    /** Плашка: тёмная скруглённая карточка, слева голова игрока, ник и здоровье в скобках цветом по HP. */
+    private static void drawCard(UiRenderer ui, NameTags settings, Tag tag) {
+        LivingEntity entity = tag.entity();
+        String name = entity.getName().getString();
+        float maxHealth = Math.max(1.0f, entity.getMaxHealth());
+        float fraction = Math.max(0.0f, Math.min(1.0f, entity.getHealth() / maxHealth));
+        int healthColor = fraction > 0.5f ? UiRenderer.lerpColor(-340971, -11870592, (fraction - 0.5f) * 2.0f) : UiRenderer.lerpColor(-1096636, -340971, fraction * 2.0f);
+        String healthText = "[" + NameTagsRenderer.formatHealth(entity.getHealth() + entity.getAbsorptionAmount()) + "]";
+        String distanceText = Math.round(tag.distance()) + "\u043c";
+        boolean friend = entity instanceof Player && FriendManager.isFriend(name);
+
+        int height = ui.dp(28.0f);
+        int radius = ui.dp(9.0f);
+        int padL = ui.dp(5.0f);
+        int padR = ui.dp(10.0f);
+        int gap = ui.dp(6.0f);
+        int face = ui.dp(18.0f);
+        boolean hasFace = entity instanceof AbstractClientPlayer;
+
+        int width = padL + padR + ui.textWidth(UiRenderer.TextStyle.BODY, name);
+        if (hasFace) {
+            width += face + gap;
+        } else {
+            width += ui.dp(5.0f);
+        }
+        if (settings.health.isOn()) {
+            width += gap + ui.textWidth(UiRenderer.TextStyle.BODY, healthText);
+        }
+        if (settings.distance.isOn()) {
+            width += gap + ui.textWidth(UiRenderer.TextStyle.SMALL, distanceText);
+        }
+
+        int x = Math.round(tag.x() - (float)width / 2.0f);
+        int y = Math.round(tag.y()) - height;
+        ui.shadow(x, y, width, height, radius, ui.dp(10.0f), friend ? 1428342110 : 0x66000000);
+        ui.roundRectBordered(x, y, width, height, radius, Math.max(1, ui.dp(1.0f)), friend ? -14714299 : 0xFF2A2D35, friend ? -805037556 : 0xE0101216);
+
+        int cursor = x + padL;
+        if (hasFace) {
+            int fy = y + (height - face) / 2;
+            ui.roundRect(cursor - 1, fy - 1, face + 2, face + 2, ui.dp(6.0f), 0xFF2F333C);
+            PlayerFaceRenderer.draw(ui.graphics(), ((AbstractClientPlayer)entity).getSkin(), cursor, fy, face);
+            cursor += face + gap;
+        } else {
+            cursor += ui.dp(5.0f);
+        }
+        ui.textCentered(UiRenderer.TextStyle.BODY, name, cursor, y, height, friend ? -11870592 : -1);
+        cursor += ui.textWidth(UiRenderer.TextStyle.BODY, name);
+        if (settings.health.isOn()) {
+            cursor += gap;
+            ui.textCentered(UiRenderer.TextStyle.BODY, healthText, cursor, y, height, healthColor);
+            cursor += ui.textWidth(UiRenderer.TextStyle.BODY, healthText);
+        }
+        if (settings.distance.isOn()) {
+            cursor += gap;
+            ui.textCentered(UiRenderer.TextStyle.SMALL, distanceText, cursor, y, height, -7697782);
+        }
+        if (settings.items.isOn()) {
+            NameTagsRenderer.drawItems(ui, entity, x + width / 2, y - ui.dp(3.0f));
+        }
+    }
+
     private static void drawTag(UiRenderer ui, NameTags settings, Tag tag) {
+        if (settings.isCard()) {
+            NameTagsRenderer.drawCard(ui, settings, tag);
+            return;
+        }
         boolean friend;
         LivingEntity entity = tag.entity();
         String name = entity.getName().getString();
