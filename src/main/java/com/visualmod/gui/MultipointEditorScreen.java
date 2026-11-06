@@ -36,6 +36,7 @@ public class MultipointEditorScreen extends Screen {
     private int rx, ry, rw, rh;
     private int btnResetX, btnDoneX, btnY, btnW, btnH;
     private float dpScale = 1.0f;
+    private int panelX, panelW;     // панель целиком (модель рисуется на всю её ширину, чтобы руки не обрезались)
 
     private double dp(float v) { return v * this.dpScale; }
 
@@ -84,6 +85,8 @@ public class MultipointEditorScreen extends Screen {
         int pw = Math.min(ui.dp(440f), sw - ui.dp(24f));
         int ph = Math.min(ui.dp(640f), sh - ui.dp(24f));
         int px = (sw - pw) / 2, py = (sh - ph) / 2;
+        this.panelX = px;
+        this.panelW = pw;
         int top = py + ui.dp(78f), bottom = py + ph - ui.dp(62f);
         this.rh = Math.max(ui.dp(160f), bottom - top);
         this.rw = this.rh / 3;   // хитбокс игрока 0.6 x 1.8
@@ -97,9 +100,13 @@ public class MultipointEditorScreen extends Screen {
         // панель
         ui.shadow(px, py, pw, ph, ui.dp(14f), ui.dp(26f), 0x99000000);
         ui.roundRectBordered(px, py, pw, ph, ui.dp(14f), 1, 0xFF2B2B33, 0xF2101014);
-        ui.textCentered(UiRenderer.TextStyle.TITLE, "Расположение точек", px, py + ui.dp(8f), ui.dp(30f), -1);
-        ui.textCentered(UiRenderer.TextStyle.SMALL, "ЛКМ: двигать точку или линию", px, py + ui.dp(36f), ui.dp(14f), -7566184);
-        ui.textCentered(UiRenderer.TextStyle.SMALL, "ПКМ: на линии — добавить точку, на точке — удалить", px, py + ui.dp(52f), ui.dp(14f), -7566184);
+        centered(ui, UiRenderer.TextStyle.TITLE, "Расположение точек", px, pw, py + ui.dp(10f), ui.dp(26f), -1);
+        centered(ui, UiRenderer.TextStyle.SMALL, "ЛКМ: двигать точку или линию", px, pw, py + ui.dp(40f), ui.dp(14f), -7566184);
+        centered(ui, UiRenderer.TextStyle.SMALL, "ПКМ: на линии добавить точку, на точке удалить", px, pw, py + ui.dp(56f), ui.dp(14f), -7566184);
+    }
+
+    private static void centered(UiRenderer ui, UiRenderer.TextStyle style, String text, int x, int w, int top, int h, int color) {
+        ui.textCentered(style, text, x + (w - ui.textWidth(style, text)) / 2, top, h, color);
     }
 
     private void draw(UiRenderer ui, int mx, int my) {
@@ -163,8 +170,8 @@ public class MultipointEditorScreen extends Screen {
         // Основной вариант: настоящая 3D-модель игрока (тот же рендер, что в инвентаре), анфас.
         if (this.minecraft.player != null) {
             int gs = ui.guiScale();
-            int x1 = this.rx / gs, y1 = this.ry / gs;
-            int x2 = (this.rx + this.rw) / gs, y2 = (this.ry + this.rh) / gs;
+            int x1 = this.panelX / gs, y1 = this.ry / gs;
+            int x2 = (this.panelX + this.panelW) / gs, y2 = (this.ry + this.rh) / gs;
             int scale = Math.max(8, Math.round((this.rh / (float) gs) / 1.8f));
             float cx = (x1 + x2) / 2.0f, cy = (y1 + y2) / 2.0f;     // «мышь» в центре = смотрит прямо
             InventoryScreen.renderEntityInInventoryFollowsMouse(ui.graphics(), x1, y1, x2, y2, scale, 0.0f, cx, cy, this.minecraft.player);
