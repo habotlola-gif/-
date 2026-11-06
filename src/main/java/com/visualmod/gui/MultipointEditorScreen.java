@@ -5,6 +5,11 @@ import com.visualmod.module.ModuleManager;
 import com.visualmod.multipoint.MultipointPath;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.renderer.RenderPipelines;
+import net.minecraft.client.resources.DefaultPlayerSkin;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.entity.player.PlayerModelType;
+import net.minecraft.world.entity.player.PlayerSkin;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
@@ -80,7 +85,7 @@ public class MultipointEditorScreen extends Screen {
         int px = (sw - pw) / 2, py = (sh - ph) / 2;
         int top = py + ui.dp(78f), bottom = py + ph - ui.dp(62f);
         this.rh = Math.max(ui.dp(160f), bottom - top);
-        this.rw = Math.min((int) (this.rh * 0.62f), pw - ui.dp(48f));
+        this.rw = this.rh / 3;   // хитбокс игрока 0.6 x 1.8
         this.rx = px + (pw - this.rw) / 2;
         this.ry = top;
         this.btnW = ui.dp(120f);
@@ -152,26 +157,37 @@ public class MultipointEditorScreen extends Screen {
         ui.textCentered(UiRenderer.TextStyle.BODY, label, x + (this.btnW - tw) / 2, this.btnY, this.btnH, -1);
     }
 
-    /** Стилизованный манекен: голова, тело, руки, ноги по пропорциям модели игрока (32 пикселя высотой). */
+    /** Скин игрока (твой, иначе Стив) спереди в реальных пропорциях: рамка = хитбокс 0.6 x 1.8. */
     private void drawMannequin(UiRenderer ui) {
-        int c = 0xFF2A2A36, edge = 0xFF3A3A4A;
-        // голова (верхние 25%), тело, ноги (нижние 37.5%)
-        part(ui, -0.62f, 1.00f, 0.62f, 0.75f, c, edge);        // голова
-        part(ui, -0.62f, 0.75f, 0.62f, 0.375f, c, edge);       // торс
-        part(ui, -1.00f, 0.75f, -0.66f, 0.375f, c, edge);      // левая рука
-        part(ui, 0.66f, 0.75f, 1.00f, 0.375f, c, edge);        // правая рука
-        part(ui, -0.62f, 0.375f, -0.03f, 0.0f, c, edge);       // левая нога
-        part(ui, 0.03f, 0.375f, 0.62f, 0.0f, c, edge);         // правая нога
-        // лицо (глаза) для ориентации
-        int ex = Math.max(2, this.rw / 40), ey = Math.max(2, this.rh / 60);
-        ui.rect(Math.round(toPx(-0.36f)), Math.round(toPy(0.90f)), ex * 3, ey, 0xFFEFEFF5);
-        ui.rect(Math.round(toPx(0.18f)), Math.round(toPy(0.90f)), ex * 3, ey, 0xFFEFEFF5);
+        PlayerSkin skin = this.minecraft.player != null ? this.minecraft.player.getSkin() : DefaultPlayerSkin.getDefaultSkin();
+        Identifier tex = skin.body().texturePath();
+        boolean slim = skin.model() == PlayerModelType.SLIM;
+        int armW = slim ? 3 : 4;
+        float u = this.rh / 32f;          // пикселей экрана на один пиксель скина
+        float cx = this.rx + this.rw / 2f;
+        float top = this.ry;
+        GuiGraphics g = ui.graphics();
+
+        // база
+        skinPart(g, tex, cx - 4 * u, top, 8 * u, 8 * u, 8, 8, 8, 8);                        // голова
+        skinPart(g, tex, cx - 4 * u, top + 8 * u, 8 * u, 12 * u, 20, 20, 8, 12);            // торс
+        skinPart(g, tex, cx - 4 * u - armW * u, top + 8 * u, armW * u, 12 * u, 44, 20, armW, 12); // правая рука (слева на экране)
+        skinPart(g, tex, cx + 4 * u, top + 8 * u, armW * u, 12 * u, 36, 52, armW, 12);      // левая рука
+        skinPart(g, tex, cx - 4 * u, top + 20 * u, 4 * u, 12 * u, 4, 20, 4, 12);           // правая нога
+        skinPart(g, tex, cx, top + 20 * u, 4 * u, 12 * u, 20, 52, 4, 12);                   // левая нога
+        // второй слой (шляпа, куртка, рукава, штаны) чуть крупнее
+        float e = 0.5f * u;
+        skinPart(g, tex, cx - 4 * u - e, top - e, 8 * u + 2 * e, 8 * u + 2 * e, 40, 8, 8, 8);
+        skinPart(g, tex, cx - 4 * u - e / 2, top + 8 * u - e / 2, 8 * u + e, 12 * u + e, 20, 36, 8, 12);
+        skinPart(g, tex, cx - 4 * u - armW * u - e / 2, top + 8 * u - e / 2, armW * u + e, 12 * u + e, 44, 36, armW, 12);
+        skinPart(g, tex, cx + 4 * u - e / 2, top + 8 * u - e / 2, armW * u + e, 12 * u + e, 52, 52, armW, 12);
+        skinPart(g, tex, cx - 4 * u - e / 2, top + 20 * u - e / 2, 4 * u + e, 12 * u + e, 4, 36, 4, 12);
+        skinPart(g, tex, cx - e / 2, top + 20 * u - e / 2, 4 * u + e, 12 * u + e, 4, 52, 4, 12);
     }
 
-    private void part(UiRenderer ui, float x0, float y0, float x1, float y1, int fill, int edge) {
-        int x = Math.round(toPx(x0)), y = Math.round(toPy(y0));
-        int w = Math.round(toPx(x1)) - x, h = Math.round(toPy(y1)) - y;
-        ui.roundRectBordered(x, y, w, h, 3, 1, edge, fill);
+    private void skinPart(GuiGraphics g, Identifier tex, float x, float y, float w, float h, int sx, int sy, int sw, int sh) {
+        g.blit(RenderPipelines.GUI_TEXTURED, tex, Math.round(x), Math.round(y), (float) sx, (float) sy,
+                Math.round(w), Math.round(h), sw, sh, 64, 64);
     }
 
     // ---- попадания ----
