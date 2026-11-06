@@ -5,6 +5,7 @@ import com.visualmod.module.ModuleManager;
 import com.visualmod.multipoint.MultipointPath;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.inventory.InventoryScreen;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.resources.DefaultPlayerSkin;
 import net.minecraft.resources.Identifier;
@@ -159,7 +160,22 @@ public class MultipointEditorScreen extends Screen {
 
     /** Скин игрока (твой, иначе Стив) спереди в реальных пропорциях: рамка = хитбокс 0.6 x 1.8. */
     private void drawMannequin(UiRenderer ui) {
-        PlayerSkin skin = this.minecraft.player != null ? this.minecraft.player.getSkin() : DefaultPlayerSkin.getDefaultSkin();
+        // Основной вариант: настоящая 3D-модель игрока (тот же рендер, что в инвентаре), анфас.
+        if (this.minecraft.player != null) {
+            int gs = ui.guiScale();
+            int x1 = this.rx / gs, y1 = this.ry / gs;
+            int x2 = (this.rx + this.rw) / gs, y2 = (this.ry + this.rh) / gs;
+            int scale = Math.max(8, Math.round((this.rh / (float) gs) / 1.8f));
+            float cx = (x1 + x2) / 2.0f, cy = (y1 + y2) / 2.0f;     // «мышь» в центре = смотрит прямо
+            InventoryScreen.renderEntityInInventoryFollowsMouse(ui.graphics(), x1, y1, x2, y2, scale, 0.0f, cx, cy, this.minecraft.player);
+            return;
+        }
+        drawSkinFallback(ui);
+    }
+
+    /** Запасной вариант без игрока в мире: плоский скин Стива. */
+    private void drawSkinFallback(UiRenderer ui) {
+        PlayerSkin skin = DefaultPlayerSkin.getDefaultSkin();
         Identifier tex = skin.body().texturePath();
         boolean slim = skin.model() == PlayerModelType.SLIM;
         int armW = slim ? 3 : 4;
