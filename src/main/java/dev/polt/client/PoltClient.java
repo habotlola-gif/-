@@ -16,12 +16,14 @@ import java.util.Map;
 public class PoltClient implements ClientModInitializer {
     public static final String NAME = "Polt Client";
     private static ModuleManager modules;
+    private final AutoSwap autoSwap = new AutoSwap();
 
     public static ModuleManager modules() { return modules; }
 
     @Override
     public void onInitializeClient() {
         modules = new ModuleManager();
+        autoSwap.init();
 
         Map<Module, KeyBinding> binds = new LinkedHashMap<>();
         for (Module m : modules.all()) {
@@ -33,6 +35,7 @@ public class PoltClient implements ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             binds.forEach((m, key) -> { while (key.wasPressed()) m.toggle(); });
             modules.tick();
+            autoSwap.tick(client);
         });
 
         // HUD: client name + list of enabled modules
