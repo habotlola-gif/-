@@ -66,6 +66,8 @@ public final class TargetEspRenderer {
                 TargetEspRenderer.renderArrows(ui, settings, entity, base, time, camera, color, glowStrength);
             } else if (settings.isRing()) {
                 TargetEspRenderer.renderRing(ui, settings, entity, base, time, color, glowStrength);
+            } else if (settings.isLightning()) {
+                LightningEsp.render(ui, settings, entity, base, time, color, partialTick, alpha);
             } else {
                 TargetEspRenderer.renderGhosts(ui, settings, entity, base, time, pixelsPerUnit, camera, color, glowStrength);
             }
@@ -212,7 +214,7 @@ public final class TargetEspRenderer {
         return fArray;
     }
 
-    private static void drawLuminousLine(UiRenderer ui, float[][] points, float thickness, int color, float glowStrength) {
+    static void drawLuminousLine(UiRenderer ui, float[][] points, float thickness, int color, float glowStrength) {
         int coreColor = -1;
         if (glowStrength > 0.0f) {
             ui.ribbon(points, thickness * 5.0f, true, TargetEspRenderer.withAlpha(color, 0.48f * glowStrength));
