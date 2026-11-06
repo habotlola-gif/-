@@ -44,8 +44,6 @@ public final class KillAura extends Module {
     public final NumberSetting range = this.setting(new NumberSetting("range", "Дальность", 3.0, 2.0, 4.5, 0.05, " бл."));
     public final NumberSetting fov = this.setting(new NumberSetting("fov", "Зона захвата", 180.0, 10.0, 360.0, 5.0, "°"));
     public final NumberSetting smoothness = this.setting(new NumberSetting("smoothness", "Плавность", 2.0, 1.0, 10.0, 1.0, ""));
-    public final NumberSetting maxSpeed = this.setting(new NumberSetting("max_speed", "Макс. скорость", 720.0, 20.0, 1080.0, 10.0, "°/с"));
-    public final NumberSetting predict = this.setting(new NumberSetting("predict", "Упреждение", 1.0, 0.0, 4.0, 0.25, " т."));
     public final BooleanSetting pitch = this.setting(new BooleanSetting("pitch", "По вертикали", true));
     public final BooleanSetting gcd = this.setting(new BooleanSetting("gcd", "Сетка чувствительности", true));
     public final BooleanSetting moveFix = this.setting(new BooleanSetting("move_fix", "Коррекция движения", true));
@@ -57,6 +55,8 @@ public final class KillAura extends Module {
 
     private static final int MAX_CRIT_WAIT_TICKS = 7;
     private static final double AIM_MARGIN = 0.10;
+    /** Цель отпускается, когда уйдёт дальше этого расстояния (между 5 и 7 блоками). */
+    private static final double RELEASE_RANGE = 6.0;
 
     private Entity target;
     private Entity lockedTarget;
@@ -108,14 +108,14 @@ public final class KillAura extends Module {
             this.aimValid = true;
         }
 
-        Vec3 aim = aimPoint(player, this.target, this.aimYaw, this.aimPitch);
+        Vec3 aim = aimPoint(player, this.target);
         Vec3 eye = player.getEyePosition();
         double dx = aim.x - eye.x, dy = aim.y - eye.y, dz = aim.z - eye.z;
         float wantYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
         float wantPitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
 
         float ease = 1.0f - (float) Math.exp(-30.0f / this.smoothness.getFloat() * 0.05f);
-        float maxStep = this.maxSpeed.getFloat() * 0.05f;
+        float maxStep = ModuleManager.EXPERIMENTAL.speedDegPerSec() * 0.05f;
         float step = this.gcd.isOn() ? gcdStep(mc) : 0.0f;
 
         float dYaw = Mth.clamp(Mth.wrapDegrees(wantYaw - this.aimYaw) * ease, -maxStep, maxStep);
@@ -209,21 +209,27 @@ public final class KillAura extends Module {
         return step <= 0.0f ? delta : Math.round(delta / step) * step;
     }
 
-    /** Точка хитбокса, ближайшая к лучу текущего silent-поворота, со сдвигом на скорость цели. */
-    private Vec3 aimPoint(LocalPlayer player, Entity e, float yaw, float pitch) {
-        Vec3 eye = player.getEyePosition();
+    /**
+     * Multipoint: точка прицеливания плавно «обходит» хитбокс (голова - корпус, влево - вправо),
+     * всегда оставаясь внутри него, поэтому удар засчитывается из любой точки круга.
+     * Плюс упреждение на скорость цели.
+     */
+    private Vec3 aimPoint(LocalPlayer player, Entity e) {
         Vec3 vel = new Vec3(e.getX() - e.xo, e.getY() - e.yo, e.getZ() - e.zo);
-        AABB box = e.getBoundingBox().move(vel.scale(this.predict.get()));
+        AABB box = e.getBoundingBox().move(vel.scale(ModuleManager.EXPERIMENTAL.predictTicks()));
+        double hw = (box.maxX - box.minX) * 0.5 - AIM_MARGIN;
+        double hd = (box.maxZ - box.minZ) * 0.5 - AIM_MARGIN;
         double h = box.maxY - box.minY;
-        AABB aimBox = new AABB(
-                box.minX + AIM_MARGIN, box.minY + h * 0.15, box.minZ + AIM_MARGIN,
-                box.maxX - AIM_MARGIN, box.maxY - h * 0.08, box.maxZ - AIM_MARGIN);
-        double depth = Math.max(0.5, eye.distanceTo(aimBox.getCenter()));
-        Vec3 onRay = eye.add(viewVector(yaw, pitch).scale(depth));
+        Vec3 c = box.getCenter();
+
+        double t = (player.tickCount + (e.getId() % 17) * 3) * 1.0;
+        double ux = Math.sin(t * 0.27);
+        double uz = Math.cos(t * 0.41);
+        double uy = Math.sin(t * 0.33);
         return new Vec3(
-                Mth.clamp(onRay.x, aimBox.minX, aimBox.maxX),
-                Mth.clamp(onRay.y, aimBox.minY, aimBox.maxY),
-                Mth.clamp(onRay.z, aimBox.minZ, aimBox.maxZ));
+                c.x + ux * hw * 0.75,
+                box.minY + h * (0.62 + 0.26 * uy),   // от груди до головы
+                c.z + uz * hd * 0.75);
     }
 
     private static Vec3 viewVector(float yaw, float pitch) {
@@ -273,7 +279,6 @@ public final class KillAura extends Module {
         double maxAngle = this.fov.get() * 0.5;
         Entity best = null;
         double bestScore = Double.MAX_VALUE;
-        double lockedScore = Double.MAX_VALUE;
 
         for (Entity e : client.level.getEntities(player, player.getBoundingBox().inflate(reach + 1.0),
                 x -> this.isValidTarget(player, x))) {
@@ -284,12 +289,25 @@ public final class KillAura extends Module {
             double angle = Math.toDegrees(Math.acos(Mth.clamp(look.dot(dir.normalize()), -1.0, 1.0)));
             if (angle > maxAngle || !player.hasLineOfSight(e)) continue;
             double score = angle + dist * 6.0;
-            if (e == this.lockedTarget) lockedScore = score;
             if (score < bestScore) { bestScore = score; best = e; }
         }
-        // не переключаемся, пока новая цель не заметно лучше текущей
-        if (this.lockedTarget != null && lockedScore < Double.MAX_VALUE && bestScore > lockedScore * 0.7 - 5.0) {
-            best = this.lockedTarget;
+
+        // Текущая цель держится, пока не отошла дальше RELEASE_RANGE (или не скрылась / не умерла).
+        Entity locked = this.lockedTarget;
+        if (locked != null && this.isValidTarget(player, locked) && player.hasLineOfSight(locked)) {
+            double dist = eye.distanceTo(nearestPoint(eye, locked.getBoundingBox()));
+            if (dist <= RELEASE_RANGE) {
+                boolean inReach = dist <= reach;
+                // другую цель берём, если текущая вне досягаемости, либо новая заметно лучше
+                if (best == null || best == locked) {
+                    best = locked;
+                } else if (inReach) {
+                    Vec3 dir = locked.getBoundingBox().getCenter().subtract(eye);
+                    double angle = Math.toDegrees(Math.acos(Mth.clamp(look.dot(dir.normalize()), -1.0, 1.0)));
+                    double lockedScore = angle + dist * 6.0;
+                    if (bestScore > lockedScore * 0.7 - 5.0) best = locked;
+                }
+            }
         }
         this.lockedTarget = best;
         return best;

@@ -61,7 +61,8 @@ public final class ModuleManager {
     public static final Hud HUD = new Hud();
     public static final TargetEsp TARGET_ESP = new TargetEsp();
     public static final AspectRatio ASPECT_RATIO = new AspectRatio();
-    public static final List<Module> MODULES = List.of(FULLBRIGHT, SPRINT, NO_JUMP_DELAY, FAST_EXP, SHADER_HANDS, SHADER_ESP, NAME_TAGS, AUTO_MACE, REMOVALS, SWING_ANIMATIONS, VIEW_MODEL, AMBIENCE, TRIGGER_BOT, AIM_ASSIST, KILL_AURA, AUTO_SWAP, FT_HELPER, CLICK_ACTIONS, HUD, TARGET_ESP, ASPECT_RATIO);
+    public static final Experimental EXPERIMENTAL = new Experimental();
+    public static final List<Module> MODULES = List.of(FULLBRIGHT, SPRINT, NO_JUMP_DELAY, FAST_EXP, SHADER_HANDS, SHADER_ESP, NAME_TAGS, AUTO_MACE, REMOVALS, SWING_ANIMATIONS, VIEW_MODEL, AMBIENCE, TRIGGER_BOT, AIM_ASSIST, KILL_AURA, AUTO_SWAP, FT_HELPER, CLICK_ACTIONS, HUD, TARGET_ESP, ASPECT_RATIO, EXPERIMENTAL);
     public static boolean actedThisTick;
 
     private ModuleManager() {
