@@ -2,6 +2,7 @@ package com.visualmod.module;
 
 import com.visualmod.FriendManager;
 import com.visualmod.setting.BooleanSetting;
+import com.visualmod.setting.ModeSetting;
 import com.visualmod.setting.NumberSetting;
 import com.visualmod.multipoint.MultipointPath;
 import net.minecraft.client.Minecraft;
@@ -48,15 +49,20 @@ public final class KillAura extends Module {
     public final BooleanSetting pitch = this.setting(new BooleanSetting("pitch", "По вертикали", true));
     public final BooleanSetting gcd = this.setting(new BooleanSetting("gcd", "Сетка чувствительности", true));
     public final BooleanSetting moveFix = this.setting(new BooleanSetting("move_fix", "Коррекция движения", true));
-    public final BooleanSetting crits = this.setting(new BooleanSetting("crits", "Тайминг крита", true));
-    public final BooleanSetting onlyCrits = this.setting(new BooleanSetting("only_crits", "Бить только с критом", false));
-    public final BooleanSetting rage = this.setting(new BooleanSetting("rage", "Rage (HvH, full target)", false));
+    /** Grim: плавная ротация с зоной захвата. Rage Grim: мгновенный поворот на ближайшего, 360°. */
+    public final ModeSetting rotation = this.setting(new ModeSetting("rotation_mode", "Ротация", "Grim", "Rage Grim"));
+    /** Выкл: бьёт сразу. Ждать падения: ждёт крит до 7 тиков, потом бьёт в любом случае. Только криты: без крита не бьёт. */
+    public final ModeSetting critMode = this.setting(new ModeSetting("crit_mode", "Криты", "Выкл", "Ждать падения", "Только криты"));
     public final BooleanSetting weaponOnly = this.setting(new BooleanSetting("weapon_only", "Только с оружием", true));
     public final BooleanSetting skipAllies = this.setting(new BooleanSetting("skip_allies", "Не бить союзников", true));
     public final BooleanSetting resetSprint = this.setting(new BooleanSetting("reset_sprint", "Сброс спринта", true));
     public final SprintResetter sprintReset = new SprintResetter();
 
     private static final int MAX_CRIT_WAIT_TICKS = 7;
+
+    public boolean isRage() {
+        return this.rotation.getIndex() == 1;
+    }
     private static final double AIM_MARGIN = 0.10;
     /** Цель отпускается, когда уйдёт дальше этого расстояния (между 5 и 7 блоками). */
     private static final double RELEASE_RANGE = 6.0;
@@ -75,6 +81,9 @@ public final class KillAura extends Module {
 
     public KillAura() {
         super("KillAura", "Silent-наведение и удар по цели", Category.COMBAT);
+        this.critMode.setIndex(1);
+        this.fov.visibleWhen(() -> !this.isRage());
+        this.smoothness.visibleWhen(() -> !this.isRage());
     }
 
     // ------------------------------------------------------------------
@@ -114,13 +123,15 @@ public final class KillAura extends Module {
             this.aimValid = true;
         }
 
-        Vec3 aim = aimPoint(player, this.target);
-        Vec3 eye = player.getEyePosition();
+        // Атака пойдёт в начале следующего тика, когда мы уже сдвинемся: целимся из ожидаемой позиции глаз,
+        // иначе при движении (стрейф, бег) поворот считается из старой точки и удар уходит мимо.
+        Vec3 eye = player.getEyePosition().add(player.getDeltaMovement());
+        Vec3 aim = aimPoint(player, this.target, eye);
         double dx = aim.x - eye.x, dy = aim.y - eye.y, dz = aim.z - eye.z;
         float wantYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
         float wantPitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
 
-        boolean rage = this.rage.isOn();
+        boolean rage = this.isRage();
         float ease = rage ? 1.0f : 1.0f - (float) Math.exp(-30.0f / this.smoothness.getFloat() * 0.05f);
         float maxStep = rage ? 180.0f : ModuleManager.EXPERIMENTAL.speedDegPerSec() * 0.05f;
         float step = this.gcd.isOn() ? gcdStep(mc) : 0.0f;
@@ -174,9 +185,10 @@ public final class KillAura extends Module {
                 && !(this.weaponOnly.isOn() && !isWeapon(player.getMainHandItem()))
                 && inReach(player, t)
                 && aimedAt(player, t, srvYaw, srvPitch);
-        if (ok && this.onlyCrits.isOn()) {
+        int critIndex = this.critMode.getIndex();
+        if (ok && critIndex == 2) {
             ok = strictCrit(player);
-        } else if (ok && this.crits.isOn() && !this.rage.isOn() && !critReady(player)) {
+        } else if (ok && critIndex == 1 && !critReady(player)) {
             ok = false;
         }
         if (!ok) return;
@@ -229,7 +241,7 @@ public final class KillAura extends Module {
      * путь всегда внутри хитбокса, поэтому удар засчитывается из любой его точки.
      * Настройки (скорость, дуга, размер, направление) в модуле Experimental. Плюс упреждение на скорость цели.
      */
-    private Vec3 aimPoint(LocalPlayer player, Entity e) {
+    private Vec3 aimPoint(LocalPlayer player, Entity e, Vec3 eye) {
         Experimental ex = ModuleManager.EXPERIMENTAL;
         Vec3 vel = new Vec3(e.getX() - e.xo, e.getY() - e.yo, e.getZ() - e.zo);
         AABB box = e.getBoundingBox().move(vel.scale(ex.predictTicks()));
@@ -245,7 +257,11 @@ public final class KillAura extends Module {
                 case 2 -> { double f = t - Math.floor(t); yield f < 0.5 ? f * 2 : 2 - f * 2; }
                 default -> t - Math.floor(t);
             };
-            float[] pt = MultipointPath.sample(phase, ex.mpArcValue(), ex.mpSizeValue());
+            // чем быстрее двигаемся мы и цель, тем ближе к центру: меньше шанс уйти за край хитбокса
+            double v = Math.hypot(vel.x, vel.z) + Math.hypot(player.getDeltaMovement().x, player.getDeltaMovement().z);
+            float shrink = 1.0f - 0.5f * (float) Mth.clamp((v - 0.10) / 0.30, 0.0, 1.0);
+            if (this.isRage()) shrink *= 0.6f;
+            float[] pt = MultipointPath.sample(phase, ex.mpArcValue(), ex.mpSizeValue() * shrink);
             px = pt[0];
             py = pt[1];
         } else {
@@ -254,7 +270,6 @@ public final class KillAura extends Module {
         }
 
         // «вправо» относительно взгляда на цель
-        Vec3 eye = player.getEyePosition();
         double dx = c.x - eye.x, dz = c.z - eye.z;
         double len = Math.max(1e-6, Math.hypot(dx, dz));
         double rx = -dz / len, rz = dx / len;
@@ -285,7 +300,7 @@ public final class KillAura extends Module {
     /** Попадает ли луч заданного поворота в хитбокс цели на дистанции range. */
     private boolean aimedAt(LocalPlayer player, Entity e, float yaw, float pitch) {
         Vec3 eye = player.getEyePosition();
-        AABB box = e.getBoundingBox();
+        AABB box = e.getBoundingBox().deflate(0.04);
         if (box.contains(eye)) return true;
         Vec3 end = eye.add(viewVector(yaw, pitch).scale(this.range.get()));
         return box.clip(eye, end).isPresent();
@@ -323,7 +338,7 @@ public final class KillAura extends Module {
         double reach = this.range.get();
         Vec3 eye = player.getEyePosition();
         Vec3 look = viewVector(player.getYRot(), player.getXRot());
-        boolean rage = this.rage.isOn();
+        boolean rage = this.isRage();
         double maxAngle = rage ? 180.0 : this.fov.get() * 0.5;
         Entity best = null;
         double bestScore = Double.MAX_VALUE;
