@@ -11,7 +11,7 @@ import org.spongepowered.asm.mixin.injection.At;
 public abstract class LivingEntityMixin {
     @ModifyReturnValue(method={"getCurrentSwingDuration"}, at={@At(value="RETURN")})
     private int visualmod$swingSpeed(int duration) {
-        if (this instanceof LocalPlayer) {
+        if ((Object)this instanceof LocalPlayer) {
             return ModuleManager.SWING_ANIMATIONS.adjustDuration(duration);
         }
         return duration;

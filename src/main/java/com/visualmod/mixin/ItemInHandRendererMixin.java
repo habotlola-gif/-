@@ -29,7 +29,7 @@ public abstract class ItemInHandRendererMixin {
         return ModuleManager.SWING_ANIMATIONS.replacesSwing() ? 1.0f : scale;
     }
 
-    @ModifyVariable(method={"applyItemArmTransform"}, at={@At(value="HEAD")}, argsOnly=true, ordinal=0)
+    @ModifyVariable(method={"applyItemArmTransform"}, at=@At(value="HEAD"), argsOnly=true, ordinal=0)
     private float visualmod$noEquipDip(float equipProgress) {
         SwingAnimations animations = ModuleManager.SWING_ANIMATIONS;
         return animations.isEnabled() && animations.noEquip.isOn() ? 0.0f : equipProgress;

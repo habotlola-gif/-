@@ -73,7 +73,7 @@ extends Screen {
                 this.visualmod$hudElement = element;
                 this.visualmod$hudGrabX = px - (double)r[0];
                 this.visualmod$hudGrabY = py - (double)r[1];
-                cir.setReturnValue((Object)true);
+                cir.setReturnValue(true);
                 return;
             }
         }
@@ -83,11 +83,11 @@ extends Screen {
         HumanoidArm arm = this.visualmod$armAt(event.x());
         if (event.button() == 0) {
             this.visualmod$draggedArm = arm;
-            cir.setReturnValue((Object)true);
+            cir.setReturnValue(true);
         } else if (event.button() == 1) {
             viewModel.reset(arm);
             ModuleManager.save();
-            cir.setReturnValue((Object)true);
+            cir.setReturnValue(true);
         }
     }
 
@@ -144,7 +144,7 @@ extends Screen {
         HumanoidArm arm = this.visualmod$armAt(guiX);
         viewModel.size(arm).set(viewModel.size(arm).get() + Math.signum(scrollY) * 5.0);
         ModuleManager.save();
-        cir.setReturnValue((Object)true);
+        cir.setReturnValue(true);
     }
 
     /*

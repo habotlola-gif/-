@@ -20,7 +20,7 @@ public abstract class WeatherEffectRendererMixin {
         return ModuleManager.AMBIENCE.adjustPrecipitation(precipitation);
     }
 
-    @ModifyArg(method={"render"}, at={@At(value="INVOKE", target="Lnet/minecraft/client/renderer/rendertype/RenderTypes;weather(Lnet/minecraft/resources/Identifier;Z)Lnet/minecraft/client/renderer/rendertype/RenderType;", ordinal=0)}, index=0)
+    @ModifyArg(method={"render"}, at=@At(value="INVOKE", target="Lnet/minecraft/client/renderer/rendertype/RenderTypes;weather(Lnet/minecraft/resources/Identifier;Z)Lnet/minecraft/client/renderer/rendertype/RenderType;", ordinal=0), index=0)
     private Identifier visualmod$softRainTexture(Identifier texture) {
         return ModuleManager.AMBIENCE.usesSoftRain() ? SOFT_RAIN : texture;
     }

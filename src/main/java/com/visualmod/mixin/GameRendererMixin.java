@@ -68,12 +68,12 @@ public abstract class GameRendererMixin {
         return ModuleManager.REMOVALS.removes(ModuleManager.REMOVALS.nausea) ? 0.0f : strength;
     }
 
-    @ModifyArg(method={"getProjectionMatrix"}, at={@At(value="INVOKE", target="Lorg/joml/Matrix4f;perspective(FFFF)Lorg/joml/Matrix4f;")}, index=1)
+    @ModifyArg(method={"getProjectionMatrix"}, at=@At(value="INVOKE", target="Lorg/joml/Matrix4f;perspective(FFFF)Lorg/joml/Matrix4f;"), index=1)
     private float visualmod$aspectRatio(float aspect) {
         return ModuleManager.ASPECT_RATIO.aspect(aspect);
     }
 
-    @ModifyArgs(method={"renderLevel"}, at={@At(value="INVOKE", target="Lnet/minecraft/client/renderer/CachedPerspectiveProjectionMatrixBuffer;getBuffer(IIF)Lcom/mojang/blaze3d/buffers/GpuBufferSlice;")})
+    @ModifyArgs(method={"renderLevel"}, at=@At(value="INVOKE", target="Lnet/minecraft/client/renderer/CachedPerspectiveProjectionMatrixBuffer;getBuffer(IIF)Lcom/mojang/blaze3d/buffers/GpuBufferSlice;"))
     private void visualmod$aspectRatioHands(Args args) {
         if (ModuleManager.ASPECT_RATIO.isEnabled()) {
             int height = (Integer)args.get(1);

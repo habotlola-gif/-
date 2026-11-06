@@ -23,15 +23,15 @@ public abstract class MinecraftMixin {
     private void visualmod$triggerBot(CallbackInfo ci) {
         ModuleManager.actedThisTick = false;
         if (ModuleManager.KILL_AURA.isEnabled()) {
-            ModuleManager.KILL_AURA.onHandleKeybinds((Minecraft)this);
+            ModuleManager.KILL_AURA.onHandleKeybinds((Minecraft)(Object)this);
         } else {
-            ModuleManager.TRIGGER_BOT.onHandleKeybinds((Minecraft)this);
+            ModuleManager.TRIGGER_BOT.onHandleKeybinds((Minecraft)(Object)this);
         }
     }
 
     @Inject(method={"handleKeybinds"}, at={@At(value="TAIL")})
     private void visualmod$inventoryTail(CallbackInfo ci) {
-        Minecraft client = (Minecraft)this;
+        Minecraft client = (Minecraft)(Object)this;
         ModuleManager.CLICK_ACTIONS.onHandleKeybinds(client);
         ModuleManager.AUTO_SWAP.onHandleKeybinds(client);
         ModuleManager.FT_HELPER.onHandleKeybinds(client);
@@ -51,7 +51,7 @@ public abstract class MinecraftMixin {
     private void visualmod$redirectMainTarget(CallbackInfoReturnable<RenderTarget> cir) {
         RenderTarget target = ShaderHandsRenderer.redirectTarget();
         if (target != null) {
-            cir.setReturnValue((Object)target);
+            cir.setReturnValue(target);
         }
     }
 }

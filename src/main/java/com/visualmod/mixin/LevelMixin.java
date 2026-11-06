@@ -11,7 +11,7 @@ import org.spongepowered.asm.mixin.injection.At;
 public abstract class LevelMixin {
     @ModifyReturnValue(method={"getDayTime"}, at={@At(value="RETURN")})
     private long visualmod$customTime(long dayTime) {
-        if (this instanceof ClientLevel) {
+        if ((Object)this instanceof ClientLevel) {
             return ModuleManager.AMBIENCE.adjustDayTime(dayTime);
         }
         return dayTime;
@@ -19,7 +19,7 @@ public abstract class LevelMixin {
 
     @ModifyReturnValue(method={"getRainLevel"}, at={@At(value="RETURN")})
     private float visualmod$customRain(float rainLevel) {
-        if (this instanceof ClientLevel) {
+        if ((Object)this instanceof ClientLevel) {
             return ModuleManager.AMBIENCE.adjustRainLevel(rainLevel);
         }
         return rainLevel;

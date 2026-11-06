@@ -18,9 +18,9 @@ public abstract class MobEffectFogEnvironmentMixin {
     @Inject(method={"isApplicable"}, at={@At(value="HEAD")}, cancellable=true)
     private void visualmod$removeEffectFog(@Nullable FogType fogType, Entity entity, CallbackInfoReturnable<Boolean> cir) {
         Removals removals = ModuleManager.REMOVALS;
-        MobEffectFogEnvironmentMixin self = this;
+        Object self = this;
         if (removals.removes(removals.blindness) && (self instanceof BlindnessFogEnvironment || self instanceof DarknessFogEnvironment)) {
-            cir.setReturnValue((Object)false);
+            cir.setReturnValue(false);
         }
     }
 }

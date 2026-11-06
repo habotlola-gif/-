@@ -58,7 +58,7 @@ public final class FriendManager {
             return;
         }
         try {
-            List names = (List)GSON.fromJson(Files.readString(FILE), new TypeToken<List<String>>(){}.getType());
+            List<String> names = GSON.fromJson(Files.readString(FILE), new TypeToken<List<String>>(){}.getType());
             if (names != null) {
                 FRIENDS.clear();
                 for (String name : names) {
