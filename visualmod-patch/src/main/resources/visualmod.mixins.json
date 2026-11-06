@@ -1,0 +1,35 @@
+{
+	"required": true,
+	"package": "com.visualmod.mixin",
+	"compatibilityLevel": "JAVA_21",
+	"client": [
+		"ChatScreenMixin",
+		"EntityRendererMixin",
+		"FogRendererMixin",
+		"GameRendererMixin",
+		"GuiGraphicsAccessor",
+		"GuiMixin",
+		"ItemInHandRendererMixin",
+		"KeyboardHandlerMixin",
+		"KeyboardInputMixin",
+		"KeyboardInputSilentMixin",
+		"LevelMixin",
+		"LevelRendererMixin",
+		"LightTextureMixin",
+		"LivingEntityAccessor",
+		"LivingEntityMixin",
+		"LocalPlayerMixin",
+		"LocalPlayerSilentMixin",
+		"MinecraftAccessor",
+		"MinecraftMixin",
+		"MobEffectFogEnvironmentMixin",
+		"MouseHandlerMixin",
+		"MultiPlayerGameModeMixin",
+		"ScreenEffectRendererMixin",
+		"WaterDropParticleMixin",
+		"WeatherEffectRendererMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}
