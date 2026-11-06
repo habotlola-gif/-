@@ -2,10 +2,13 @@ package com.visualmod.module;
 
 import com.visualmod.setting.BooleanSetting;
 import com.visualmod.setting.ColorSetting;
+import com.visualmod.setting.ModeSetting;
 import com.visualmod.setting.NumberSetting;
 
 /** Частицы-звёздочки: вокруг тебя, вокруг цели и вспышкой при ударе. Форма как на референсе (скруглённая звезда). */
 public class Particles extends Module {
+    /** Острая: классическая звезда. Мягкая: скруглённая, как на исходном референсе. */
+    public final ModeSetting shape = this.setting(new ModeSetting("shape", "Форма", "Острая", "Мягкая"));
     public final BooleanSetting aroundMe = this.setting(new BooleanSetting("around_me", "Вокруг меня", true));
     public final BooleanSetting aroundTarget = this.setting(new BooleanSetting("around_target", "Вокруг цели", true));
     public final BooleanSetting onHit = this.setting(new BooleanSetting("on_hit", "При ударе", true));

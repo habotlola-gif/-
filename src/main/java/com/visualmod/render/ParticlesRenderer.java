@@ -27,10 +27,8 @@ public final class ParticlesRenderer {
     private static final List<Star> STARS = new ArrayList<>();
     private static long lastNanos;
     private static double spawnBudgetMe, spawnBudgetTarget;
-    private static final Identifier STAR_FILLED = tex("star_filled");
-    private static final Identifier STAR_THIN = tex("star_outline_thin");
-    private static final Identifier STAR_NORMAL = tex("star_outline");
-    private static final Identifier STAR_THICK = tex("star_outline_thick");
+    private static final Identifier[] SOFT = {tex("star_filled"), tex("star_outline_thin"), tex("star_outline"), tex("star_outline_thick")};
+    private static final Identifier[] SHARP = {tex("star_sharp_filled"), tex("star_sharp_outline_thin"), tex("star_sharp_outline"), tex("star_sharp_outline_thick")};
     private static final int TEX = 256;
 
     private static Identifier tex(String name) {
@@ -154,12 +152,14 @@ public final class ParticlesRenderer {
         float a = Mth.clamp(alpha, 0.0f, 1.0f);
         GuiGraphics g = ui.graphics();
         int size = Math.max(6, Math.round(r * 2.0f));
+        Identifier[] set = s.shape.getIndex() == 0 ? SHARP : SOFT;
+        Identifier filled = set[0];
         Identifier tex;
         if (s.fill.isOn()) {
-            tex = STAR_FILLED;
+            tex = filled;
         } else {
             float th = s.thickness.getFloat();
-            tex = th < 75.0f ? STAR_THIN : th < 150.0f ? STAR_NORMAL : STAR_THICK;
+            tex = th < 75.0f ? set[1] : th < 150.0f ? set[2] : set[3];
         }
         g.pose().pushMatrix();
         g.pose().translate(cx, cy);
@@ -167,7 +167,7 @@ public final class ParticlesRenderer {
         if (glow > 0.0f) {
             // мягкое свечение: та же звезда крупнее и почти прозрачная
             int big = Math.round(size * 1.45f);
-            g.blit(RenderPipelines.GUI_TEXTURED, STAR_FILLED, -big / 2, -big / 2, 0.0f, 0.0f, big, big, TEX, TEX, TEX, TEX,
+            g.blit(RenderPipelines.GUI_TEXTURED, filled, -big / 2, -big / 2, 0.0f, 0.0f, big, big, TEX, TEX, TEX, TEX,
                     withAlpha(color, Math.min(0.30f, 0.14f * glow) * a));
         }
         g.blit(RenderPipelines.GUI_TEXTURED, tex, -size / 2, -size / 2, 0.0f, 0.0f, size, size, TEX, TEX, TEX, TEX,
