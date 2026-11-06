@@ -70,6 +70,7 @@ public final class KillAura extends Module {
     private boolean aimValid;
     private float aimYaw, aimPitch;   // silent-поворот (то, что видит сервер)
     private float camYaw, camPitch;   // реальная камера, сохраняется на время тика
+    private float bobY, bobX;         // yBob/xBob до тика (качание рук считается от камеры, а не от silent-поворота)
     private int critWait;
 
     public KillAura() {
@@ -105,6 +106,8 @@ public final class KillAura extends Module {
 
         this.camYaw = player.getYRot();
         this.camPitch = player.getXRot();
+        this.bobY = player.yBob;
+        this.bobX = player.xBob;
         if (!this.aimValid) {
             this.aimYaw = this.camYaw;
             this.aimPitch = this.camPitch;
@@ -142,6 +145,12 @@ public final class KillAura extends Module {
         player.setXRot(this.camPitch);
         player.yRotO = this.camYaw;
         player.xRotO = this.camPitch;
+        // Качание рук в первом лице: ваниль считает yBob/xBob от поворота игрока в момент тика, то есть тут от
+        // silent-поворота, и руки «уезжали» относительно камеры. Пересчитываем от камеры, как в ванили.
+        player.yBobO = this.bobY;
+        player.xBobO = this.bobX;
+        player.yBob = this.bobY + (this.camYaw - this.bobY) * 0.5f;
+        player.xBob = this.bobX + (this.camPitch - this.bobX) * 0.5f;
         this.active = false;
     }
 

@@ -24,12 +24,12 @@ extends Module {
     private static final int OFFHAND_SLOT = 45;
     private static final int FIRST_INV_SLOT = 9;
     private static final int LAST_HOTBAR_SLOT = 44;
-    public final KeybindSetting swapKey = this.setting(new KeybindSetting("key", "\u041a\u043b\u0430\u0432\u0438\u0448\u0430", -1));
-    public final ModeSetting item1 = this.setting(new ModeSetting("item1", "\u041f\u0440\u0435\u0434\u043c\u0435\u0442 1", TYPE_NAMES));
-    public final ModeSetting item2 = this.setting(new ModeSetting("item2", "\u041f\u0440\u0435\u0434\u043c\u0435\u0442 2", TYPE_NAMES));
-    private boolean pending;
-    private int currentCycle;
-    private int targetCycle;
+    public final KeybindSetting swapKey = this.setting(new KeybindSetting("key", "Клавиша 1", -1));
+    public final ModeSetting item1 = this.setting(new ModeSetting("item1", "Предмет 1", TYPE_NAMES));
+    public final KeybindSetting swapKey2 = this.setting(new KeybindSetting("key2", "Клавиша 2", -1));
+    public final ModeSetting item2 = this.setting(new ModeSetting("item2", "Предмет 2", TYPE_NAMES));
+    private int pending;        // 0 нет, 1 клавиша 1, 2 клавиша 2
+    private int targetType;
     private int stage;
     private int source = -1;
     private int pauseTicks;
@@ -42,8 +42,8 @@ extends Module {
 
     public AutoSwap() {
         super("AutoSwap", "\u0426\u0438\u043a\u043b \u043f\u0440\u0435\u0434\u043c\u0435\u0442\u043e\u0432 \u0432 \u043e\u0444\u0445\u0435\u043d\u0434 \u043f\u043e \u043a\u043b\u0430\u0432\u0438\u0448\u0435", Category.COMBAT);
-        this.item1.setIndex(0);
-        this.item2.setIndex(1);
+        this.item1.setIndex(1);   // Шар/Сфера
+        this.item2.setIndex(0);   // Талисман/Тотем
     }
 
     public boolean isSwapping() {
@@ -78,16 +78,16 @@ extends Module {
             return;
         }
         if (this.stage == 0) {
-            if (this.pending && client.screen == null && !ModuleManager.CLICK_ACTIONS.isBusy()) {
-                this.pending = false;
-                this.trigger();
+            if (this.pending != 0 && client.screen == null && !ModuleManager.CLICK_ACTIONS.isBusy()) {
+                int which = this.pending;
+                this.pending = 0;
+                this.trigger(which);
             }
             return;
         }
         if (this.stage == 2) {
             if (this.tickNumber >= this.readyAtTick) {
                 if (ItemStack.matches((ItemStack)player.getOffhandItem(), (ItemStack)this.expectedOffhand) && ItemStack.matches((ItemStack)player.inventoryMenu.getSlot(this.source).getItem(), (ItemStack)this.expectedSource) && player.inventoryMenu.getCarried().isEmpty()) {
-                    this.currentCycle = this.targetCycle;
                 } else {
                     AutoSwap.message("\u00a7cAutoSwap: \u0441\u0435\u0440\u0432\u0435\u0440 \u043d\u0435 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u043b \u043e\u0431\u043c\u0435\u043d");
                 }
@@ -108,7 +108,7 @@ extends Module {
         if (this.pauseTicks < 2) {
             return;
         }
-        int type = this.activeTypes()[this.targetCycle];
+        int type = this.targetType;
         if (!this.matches(player.inventoryMenu.getSlot(this.source).getItem(), type)) {
             this.source = this.findSlot(player, type);
         }
@@ -137,28 +137,36 @@ extends Module {
         }
     }
 
-    public void trigger() {
-        int cycle;
+    /**
+     * Запуск свапа. which: 1 = клавиша 1 (категория «Предмет 1»), 2 = клавиша 2 («Предмет 2»).
+     * Если в оффхенде уже предмет этой категории, берём ДРУГОЙ предмет той же категории (сфера A -> сфера B,
+     * талисман A -> талисман B). Если там что-то другое (например талисман, а нужна сфера), берём первый подходящий.
+     */
+    public void trigger(int which) {
         Minecraft client = Minecraft.getInstance();
         LocalPlayer player = client.player;
         if (player == null || this.stage != 0 || ModuleManager.CLICK_ACTIONS.isBusy()) {
             return;
         }
-        int[] types = this.activeTypes();
-        int slot = this.findSlot(player, types[cycle = Math.floorMod(this.currentCycle + 1, types.length)]);
+        int type = which == 2 ? this.item2.getIndex() : this.item1.getIndex();
+        int slot = this.findSlot(player, type);
         if (slot < 0) {
-            AutoSwap.message("\u00a7c\u041f\u0440\u0435\u0434\u043c\u0435\u0442 \u0434\u043b\u044f \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0435\u0433\u043e \u0441\u0432\u0430\u043f\u0430 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d");
+            AutoSwap.message("§cAutoSwap: в инвентаре нет подходящего предмета (" + TYPE_NAMES[type] + ")");
             return;
         }
         if (!player.inventoryMenu.getCarried().isEmpty()) {
-            AutoSwap.message("\u00a7cAutoSwap: \u0441\u043d\u0430\u0447\u0430\u043b\u0430 \u043e\u0441\u0432\u043e\u0431\u043e\u0434\u0438\u0442\u0435 \u043a\u0443\u0440\u0441\u043e\u0440");
+            AutoSwap.message("§cAutoSwap: сначала освободите курсор");
             return;
         }
         this.source = slot;
-        this.targetCycle = cycle;
+        this.targetType = type;
         this.pauseTicks = 0;
         this.pauseArmed = true;
         this.stage = 1;
+    }
+
+    public void trigger() {
+        this.trigger(1);
     }
 
     private int[] activeTypes() {
@@ -166,32 +174,29 @@ extends Module {
     }
 
     private int findSlot(LocalPlayer player, int type) {
+        ItemStack off = player.getOffhandItem();
+        boolean offIsType = this.matches(off, type);
         for (int slot = 9; slot <= 44; ++slot) {
-            if (!this.matches(player.inventoryMenu.getSlot(slot).getItem(), type)) continue;
+            ItemStack stack = player.inventoryMenu.getSlot(slot).getItem();
+            if (!this.matches(stack, type)) continue;
+            // в оффхенде уже такой же предмет, ищем другой
+            if (offIsType && ItemStack.isSameItemSameComponents(stack, off)) continue;
             return slot;
         }
         return -1;
     }
 
+    /** Категории по ключевым словам в названии: подходит ЛЮБОЙ предмет с таким названием, не только голова/тотем. */
     private boolean matches(ItemStack stack, int type) {
         if (stack.isEmpty()) {
             return false;
         }
+        String name = stack.getHoverName().getString().toLowerCase(Locale.ROOT);
         return switch (type) {
-            case 0 -> stack.is(Items.TOTEM_OF_UNDYING);
-            case 1 -> {
-                if (stack.is(Items.PLAYER_HEAD) && AutoSwap.isSphereName(stack.getHoverName().getString())) {
-                    yield true;
-                }
-                yield false;
-            }
+            case 0 -> stack.is(Items.TOTEM_OF_UNDYING) || name.contains("талисман") || name.contains("тотем") || name.contains("totem");
+            case 1 -> name.contains("сфера") || name.contains("шар") || name.contains("sphere") || name.contains("orb");
             default -> false;
         };
-    }
-
-    private static boolean isSphereName(String name) {
-        String lower = name.toLowerCase(Locale.ROOT);
-        return lower.contains("\u0441\u0444\u0435\u0440\u0430") || lower.contains("\u0448\u0430\u0440");
     }
 
     private static int latencyMs(Minecraft client, LocalPlayer player) {
@@ -208,7 +213,7 @@ extends Module {
         this.pauseThroughTick = false;
         this.expectedOffhand = ItemStack.EMPTY;
         this.expectedSource = ItemStack.EMPTY;
-        this.pending = false;
+        this.pending = 0;
     }
 
     private static void message(String text) {
@@ -220,8 +225,13 @@ extends Module {
 
     @Override
     public void onBind(int bind) {
-        if (this.isEnabled() && this.stage == 0 && this.swapKey.matches(bind)) {
-            this.pending = true;
+        if (!this.isEnabled() || this.stage != 0) {
+            return;
+        }
+        if (this.swapKey.matches(bind)) {
+            this.pending = 1;
+        } else if (this.swapKey2.matches(bind)) {
+            this.pending = 2;
         }
     }
 
@@ -229,7 +239,6 @@ extends Module {
     public void setEnabled(boolean enabled) {
         super.setEnabled(enabled);
         this.reset();
-        this.currentCycle = 0;
     }
 }
 
