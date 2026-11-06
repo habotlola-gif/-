@@ -9,9 +9,9 @@ import net.minecraft.client.Minecraft;
 
 /**
  * Экспериментальные функции KillAura (категория Misc): упреждение, скорость наведения и Multipoint.
- * Пока модуль выключен, KillAura работает на оптимальных встроенных значениях;
- * включишь модуль, и значения берутся из настроек ниже. Сам путь multipoint (редактор)
- * применяется всегда.
+ * Модуль выключен: Multipoint выключен (прицел в фиксированную точку корпуса), упреждение и скорость
+ * наведения берутся оптимальные встроенные. Модуль включён: Multipoint работает по пути из редактора
+ * и всем настройкам ниже, упреждение и скорость тоже берутся отсюда.
  */
 public final class Experimental extends Module {
     public static final double DEFAULT_PREDICT = 1.0;
@@ -48,8 +48,9 @@ public final class Experimental extends Module {
         return (float) (this.isEnabled() ? this.speed.get() : DEFAULT_SPEED);
     }
 
+    /** Multipoint работает только когда включён модуль Experimental (и переключатель Multipoint). */
     public boolean multipointOn() {
-        return !this.isEnabled() || this.multipoint.isOn();
+        return this.isEnabled() && this.multipoint.isOn();
     }
 
     public double mpSpeedValue() {
