@@ -34,6 +34,8 @@ extends Module {
     public final ModeSetting item2 = this.setting(new ModeSetting("item2", "Предмет 2", TYPE_NAMES));
     private int pending;        // 0 нет, 1 клавиша 1, 2 клавиша 2
     private int targetType;
+    private boolean forceClick;       // запасной способ: клик по инвентарю вместо пакетов хотбара
+    private boolean fallbackTried;
     private int stage;
     private int source = -1;
     private int pauseTicks;
@@ -93,7 +95,16 @@ extends Module {
             if (this.tickNumber >= this.readyAtTick) {
                 if (ItemStack.matches((ItemStack)player.getOffhandItem(), (ItemStack)this.expectedOffhand) && ItemStack.matches((ItemStack)player.inventoryMenu.getSlot(this.source).getItem(), (ItemStack)this.expectedSource) && player.inventoryMenu.getCarried().isEmpty()) {
                 } else {
-                    AutoSwap.message("§cAutoSwap: сервер не подтвердил обмен (слот " + this.source + "), попробуй ещё раз");
+                    if (!this.fallbackTried) {
+                        // первый способ не сработал: один раз пробуем другой (клик «обмен с оффхендом» по слоту)
+                        this.fallbackTried = true;
+                        this.forceClick = true;
+                        this.stage = 1;
+                        this.pauseTicks = 0;
+                        this.pauseArmed = true;
+                        return;
+                    }
+                    AutoSwap.message("§cAutoSwap: сервер не подтвердил обмен (слот " + this.source + "), оба способа не сработали");
                 }
                 this.reset();
             }
@@ -104,7 +115,7 @@ extends Module {
             return;
         }
         // Предмет в хотбаре меняется как клавишей F (без инвентаря), предмет в сумке одним кликом «обмен с оффхендом».
-        boolean viaHotbar = this.source >= 36 && this.source <= 44;
+        boolean viaHotbar = !this.forceClick && this.source >= 36 && this.source <= 44;
         if (player.isUsingItem() || ModuleManager.CLICK_ACTIONS.isBusy()
                 || (!viaHotbar && (ModuleManager.actedThisTick || client.options.keyAttack.isDown() || client.options.keyUse.isDown()
                 || client.options.keySwapOffhand.isDown() || client.options.keyDrop.isDown() || client.options.keyPickItem.isDown()))) {
@@ -120,7 +131,7 @@ extends Module {
         int type = this.targetType;
         if (!this.matches(player.inventoryMenu.getSlot(this.source).getItem(), type)) {
             this.source = this.findSlot(player, type);
-            viaHotbar = this.source >= 36 && this.source <= 44;
+            viaHotbar = !this.forceClick && this.source >= 36 && this.source <= 44;
         }
         if (this.source < 0) {
             AutoSwap.message("§cAutoSwap: предмет пропал из инвентаря (" + TYPE_NAMES[type] + ")");
@@ -147,6 +158,7 @@ extends Module {
         } else {
             client.gameMode.handleInventoryMouseClick(player.inventoryMenu.containerId, this.source, 40, ClickType.SWAP, (Player)player);
         }
+        AutoSwap.message("§aAutoSwap: меняю " + this.expectedOffhand.getHoverName().getString() + (viaHotbar ? " (хотбар)" : " (клик)"));
         this.readyAtTick = this.tickNumber + Math.max(2, Math.min(30, (AutoSwap.latencyMs(client, player) + 49) / 50 + 2));
         this.stage = 2;
         this.pauseArmed = false;
@@ -238,6 +250,8 @@ extends Module {
         this.expectedOffhand = ItemStack.EMPTY;
         this.expectedSource = ItemStack.EMPTY;
         this.pending = 0;
+        this.forceClick = false;
+        this.fallbackTried = false;
     }
 
     private static void message(String text) {
@@ -249,7 +263,13 @@ extends Module {
 
     @Override
     public void onBind(int bind) {
-        if (!this.isEnabled() || this.stage != 0) {
+        if (!this.isEnabled()) {
+            if (this.swapKey.matches(bind) || this.swapKey2.matches(bind)) {
+                AutoSwap.message("§eAutoSwap выключен: включи модуль в меню (клик по AutoSwap), клавиша сама его не включает");
+            }
+            return;
+        }
+        if (this.stage != 0) {
             return;
         }
         if (this.swapKey.matches(bind)) {
