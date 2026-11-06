@@ -91,10 +91,10 @@ public final class CrystalsEsp {
                 float[] a = WorldProjection.toScreen(f.a()), b = WorldProjection.toScreen(f.b()), c = WorldProjection.toScreen(f.c());
                 if (a == null || b == null || c == null) continue;
                 // грани от тёмного оттенка цвета темы до светлого: видна объёмность камня
-                int dark = UiRenderer.lerpColor(0xFF000000, 0xFF000000 | (color & 0xFFFFFF), 0.50f);
-                int light = UiRenderer.lerpColor(0xFF000000 | (color & 0xFFFFFF), 0xFFFFFFFF, 0.80f);
+                int darkCol = UiRenderer.lerpColor(0xFF000000, 0xFF000000 | (color & 0xFFFFFF), 0.50f);
+                int lightCol = UiRenderer.lerpColor(0xFF000000 | (color & 0xFFFFFF), 0xFFFFFFFF, 0.80f);
                 float sh = (float) Math.pow(f.shade(), 1.4);
-                int face = UiRenderer.lerpColor(dark, light, sh);
+                int face = UiRenderer.lerpColor(darkCol, lightCol, sh);
                 ui.triangle(a[0], a[1], b[0], b[1], c[0], c[1], 0xFF000000 | face & 0xFFFFFF);
             }
         }
