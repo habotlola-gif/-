@@ -24,7 +24,6 @@ public final class TargetTracker {
                 lastHit = living;
                 lastHitAt = System.currentTimeMillis();
                 ParticlesRenderer.onAttack(living);
-                StarsEsp.onAttack(living);
             }
         }
     }
