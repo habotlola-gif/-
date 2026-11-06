@@ -49,6 +49,8 @@ public final class KillAura extends Module {
     public final BooleanSetting gcd = this.setting(new BooleanSetting("gcd", "Сетка чувствительности", true));
     public final BooleanSetting moveFix = this.setting(new BooleanSetting("move_fix", "Коррекция движения", true));
     public final BooleanSetting crits = this.setting(new BooleanSetting("crits", "Тайминг крита", true));
+    public final BooleanSetting onlyCrits = this.setting(new BooleanSetting("only_crits", "Бить только с критом", false));
+    public final BooleanSetting rage = this.setting(new BooleanSetting("rage", "Rage (HvH, full target)", false));
     public final BooleanSetting weaponOnly = this.setting(new BooleanSetting("weapon_only", "Только с оружием", true));
     public final BooleanSetting skipAllies = this.setting(new BooleanSetting("skip_allies", "Не бить союзников", true));
     public final BooleanSetting resetSprint = this.setting(new BooleanSetting("reset_sprint", "Сброс спринта", true));
@@ -115,8 +117,9 @@ public final class KillAura extends Module {
         float wantYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
         float wantPitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
 
-        float ease = 1.0f - (float) Math.exp(-30.0f / this.smoothness.getFloat() * 0.05f);
-        float maxStep = ModuleManager.EXPERIMENTAL.speedDegPerSec() * 0.05f;
+        boolean rage = this.rage.isOn();
+        float ease = rage ? 1.0f : 1.0f - (float) Math.exp(-30.0f / this.smoothness.getFloat() * 0.05f);
+        float maxStep = rage ? 180.0f : ModuleManager.EXPERIMENTAL.speedDegPerSec() * 0.05f;
         float step = this.gcd.isOn() ? gcdStep(mc) : 0.0f;
 
         float dYaw = Mth.clamp(Mth.wrapDegrees(wantYaw - this.aimYaw) * ease, -maxStep, maxStep);
@@ -162,7 +165,9 @@ public final class KillAura extends Module {
                 && !(this.weaponOnly.isOn() && !isWeapon(player.getMainHandItem()))
                 && inReach(player, t)
                 && aimedAt(player, t, srvYaw, srvPitch);
-        if (ok && this.crits.isOn() && !critReady(player)) {
+        if (ok && this.onlyCrits.isOn()) {
+            ok = strictCrit(player);
+        } else if (ok && this.crits.isOn() && !this.rage.isOn() && !critReady(player)) {
             ok = false;
         }
         if (!ok) return;
@@ -278,6 +283,22 @@ public final class KillAura extends Module {
     }
 
     /** Крит: в воздухе при подъёме ждём падения, но не дольше MAX_CRIT_WAIT_TICKS. */
+    /**
+     * Бить только с критом. Условия крита как в игре: падение (fallDistance > 0), не на земле, не в воде,
+     * не на лестнице, не пассажир и НЕ в спринте. Если падаем в спринте, на тик отпускаем спринт
+     * (W-tap) и бьём на следующем тике.
+     */
+    private boolean strictCrit(LocalPlayer player) {
+        boolean falling = player.fallDistance > 0.0 && !player.onGround() && !player.onClimbable()
+                && !player.isInWater() && !player.isPassenger();
+        if (!falling) return false;
+        if (player.isSprinting()) {
+            this.sprintReset.start(1, false);
+            return false;
+        }
+        return true;
+    }
+
     private boolean critReady(LocalPlayer player) {
         boolean airRising = !player.onGround() && player.getDeltaMovement().y > 0.0
                 && !player.isInWater() && !player.onClimbable();
@@ -293,7 +314,8 @@ public final class KillAura extends Module {
         double reach = this.range.get();
         Vec3 eye = player.getEyePosition();
         Vec3 look = viewVector(player.getYRot(), player.getXRot());
-        double maxAngle = this.fov.get() * 0.5;
+        boolean rage = this.rage.isOn();
+        double maxAngle = rage ? 180.0 : this.fov.get() * 0.5;
         Entity best = null;
         double bestScore = Double.MAX_VALUE;
 
@@ -305,7 +327,7 @@ public final class KillAura extends Module {
             Vec3 dir = box.getCenter().subtract(eye);
             double angle = Math.toDegrees(Math.acos(Mth.clamp(look.dot(dir.normalize()), -1.0, 1.0)));
             if (angle > maxAngle || !player.hasLineOfSight(e)) continue;
-            double score = angle + dist * 6.0;
+            double score = rage ? dist : angle + dist * 6.0;
             if (score < bestScore) { bestScore = score; best = e; }
         }
 
@@ -318,7 +340,7 @@ public final class KillAura extends Module {
                 // другую цель берём, если текущая вне досягаемости, либо новая заметно лучше
                 if (best == null || best == locked) {
                     best = locked;
-                } else if (inReach) {
+                } else if (inReach && !rage) {
                     Vec3 dir = locked.getBoundingBox().getCenter().subtract(eye);
                     double angle = Math.toDegrees(Math.acos(Mth.clamp(look.dot(dir.normalize()), -1.0, 1.0)));
                     double lockedScore = angle + dist * 6.0;
