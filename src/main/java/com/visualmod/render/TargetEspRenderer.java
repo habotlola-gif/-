@@ -66,6 +66,8 @@ public final class TargetEspRenderer {
                 TargetEspRenderer.renderArrows(ui, settings, entity, base, time, camera, color, glowStrength);
             } else if (settings.isRing()) {
                 TargetEspRenderer.renderRing(ui, settings, entity, base, time, color, glowStrength);
+            } else if (settings.isStars()) {
+                StarsEsp.render(ui, entity, base, time, camera, pixelsPerUnit, color, alpha, partialTick);
             } else if (settings.isLightning()) {
                 LightningEsp.render(ui, settings, entity, base, time, color, partialTick, alpha);
             } else {
