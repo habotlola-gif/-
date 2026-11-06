@@ -6,6 +6,7 @@ import com.visualmod.gui.ClickGuiScreen;
 import com.visualmod.module.ModuleManager;
 import com.visualmod.render.HudRenderer;
 import com.visualmod.render.NameTagsRenderer;
+import com.visualmod.render.ParticlesRenderer;
 import com.visualmod.render.TargetEspRenderer;
 import java.util.List;
 import java.util.Locale;
@@ -52,6 +53,7 @@ implements ClientModInitializer {
         });
         HudElementRegistry.addFirst((Identifier)Identifier.fromNamespaceAndPath((String)MOD_ID, (String)"name_tags"), NameTagsRenderer::render);
         HudElementRegistry.addFirst((Identifier)Identifier.fromNamespaceAndPath((String)MOD_ID, (String)"target_esp"), TargetEspRenderer::render);
+        HudElementRegistry.addFirst((Identifier)Identifier.fromNamespaceAndPath((String)MOD_ID, (String)"particles"), ParticlesRenderer::render);
         HudElementRegistry.attachElementBefore((Identifier)VanillaHudElements.CHAT, (Identifier)Identifier.fromNamespaceAndPath((String)MOD_ID, (String)"hud"), HudRenderer::render);
     }
 

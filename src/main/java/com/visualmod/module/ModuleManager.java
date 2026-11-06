@@ -63,7 +63,8 @@ public final class ModuleManager {
     public static final AspectRatio ASPECT_RATIO = new AspectRatio();
     public static final Experimental EXPERIMENTAL = new Experimental();
     public static final DiscordRpc DISCORD_RPC = new DiscordRpc();
-    public static final List<Module> MODULES = List.of(FULLBRIGHT, SPRINT, NO_JUMP_DELAY, FAST_EXP, SHADER_HANDS, SHADER_ESP, NAME_TAGS, AUTO_MACE, REMOVALS, SWING_ANIMATIONS, VIEW_MODEL, AMBIENCE, TRIGGER_BOT, AIM_ASSIST, KILL_AURA, AUTO_SWAP, FT_HELPER, CLICK_ACTIONS, HUD, TARGET_ESP, ASPECT_RATIO, EXPERIMENTAL, DISCORD_RPC);
+    public static final Particles PARTICLES = new Particles();
+    public static final List<Module> MODULES = List.of(FULLBRIGHT, SPRINT, NO_JUMP_DELAY, FAST_EXP, SHADER_HANDS, SHADER_ESP, NAME_TAGS, AUTO_MACE, REMOVALS, SWING_ANIMATIONS, VIEW_MODEL, AMBIENCE, TRIGGER_BOT, AIM_ASSIST, KILL_AURA, AUTO_SWAP, FT_HELPER, CLICK_ACTIONS, HUD, TARGET_ESP, ASPECT_RATIO, EXPERIMENTAL, DISCORD_RPC, PARTICLES);
     public static boolean actedThisTick;
 
     private ModuleManager() {

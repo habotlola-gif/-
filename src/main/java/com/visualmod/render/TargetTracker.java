@@ -23,6 +23,7 @@ public final class TargetTracker {
             if (!(target instanceof ArmorStand)) {
                 lastHit = living;
                 lastHitAt = System.currentTimeMillis();
+                ParticlesRenderer.onAttack(living);
             }
         }
     }
