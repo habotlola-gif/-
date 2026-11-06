@@ -14,14 +14,14 @@ import java.util.List;
 import java.util.Random;
 
 /**
- * Режим «Звёзды» для TargetESP: острые заливные звёзды разбросаны вокруг цели от ног до головы,
+ * Режим «Звёзды» для TargetESP: мягкие заливные звёзды (форма с референса) разбросаны вокруг цели от ног до головы,
  * медленно кружатся и мерцают. При ударе разлетаются от тела, вспыхивают, увеличиваются и закручиваются,
  * потом плавно возвращаются. Количество фиксированное, настраивается только цвет.
  */
 public final class StarsEsp {
     private static final int COUNT = 16;
     private static final int TEX = 256;
-    private static final Identifier STAR = Identifier.fromNamespaceAndPath("visualmod", "textures/gui/star_sharp_filled.png");
+    private static final Identifier STAR = Identifier.fromNamespaceAndPath("visualmod", "textures/gui/star_filled.png");
 
     private static int entityId = -1;
     private static List<StarDef> stars = new ArrayList<>();
@@ -87,19 +87,19 @@ public final class StarsEsp {
         record Item(float x, float y, float r, float rot, float a, double dist) {}
         List<Item> items = new ArrayList<>();
         for (StarDef s : stars) {
-            double ang = s.angle + s.spinDir * s.spinSpeed * time + burst * s.spinDir * 1.4;
-            double rad = s.radius * (1.0 + 0.9 * burst) + 0.04 * Math.sin(time * 1.3 + s.phase);
-            double y = height * s.height + 0.05 * Math.sin(time * 1.7 + s.phase) + burst * 0.25 * (s.height - 0.5);
+            double ang = s.angle + s.spinDir * s.spinSpeed * time + burst * s.spinDir * 0.45;
+            double rad = s.radius * (1.0 + 0.22 * burst) + 0.04 * Math.sin(time * 1.3 + s.phase);
+            double y = height * s.height + 0.05 * Math.sin(time * 1.7 + s.phase) + burst * 0.06 * (s.height - 0.5);
             Vec3 p = base.add(Math.cos(ang) * rad, y, Math.sin(ang) * rad);
             float[] scr = WorldProjection.toScreen(p);
             if (scr == null) continue;
             double dist = Math.max(0.3, p.distanceTo(camera));
-            float size = s.size * (1.0f + 0.7f * burst);
+            float size = s.size * (1.0f + 0.3f * burst);
             float r = (float) (size * pxPerUnit / dist);
             if (r < 2.5f) continue;
             float twinkle = 0.6f + 0.4f * (float) Math.sin(time * 3.0 + s.phase);
             float a = Mth.clamp(alpha * Math.min(1.0f, twinkle + burst * 0.6f), 0.0f, 1.0f);
-            float rot = (float) (s.rot0 + s.rotSpeed * time + burst * s.rotSpeed * 3.0);
+            float rot = (float) (s.rot0 + s.rotSpeed * time + burst * s.rotSpeed * 1.5);
             items.add(new Item(scr[0], scr[1], r, rot, a, dist));
         }
         items.sort(Comparator.comparingDouble((Item i) -> -i.dist()));
@@ -107,7 +107,7 @@ public final class StarsEsp {
         int flash = UiRenderer.lerpColor(color, -1, 0.65f * burst);   // при ударе звёзды белеют
         for (Item it : items) {
             int size = Math.max(6, Math.round(it.r() * 2.0f));
-            int big = Math.round(size * (1.5f + 0.6f * burst));
+            int big = Math.round(size * (1.5f + 0.35f * burst));
             g.pose().pushMatrix();
             g.pose().translate(it.x(), it.y());
             g.pose().rotate(it.rot());
