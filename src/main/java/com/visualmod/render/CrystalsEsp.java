@@ -11,7 +11,7 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * Режим «Кристаллы» для TargetESP: 14 объёмных ромбов-самоцветов (октаэдры) парят вокруг цели на разной высоте
+ * Режим «Кристаллы» для TargetESP: 14 объёмных ромбов-самоцветов (стоят вертикально, повёрнуты по углу своей орбиты) парят вокруг цели на разной высоте
  * и расстоянии и обходят её по кругу. У каждого мягкое свечение и грани разной яркости.
  *
  * Расстановка и движение взяты из присланного кода (семена по индексу, орбита по времени, радиус/высота),
@@ -50,22 +50,18 @@ public final class CrystalsEsp {
             Vec3 c = base.add(radius * Math.cos(rad), seed2 * height, radius * Math.sin(rad));
 
             float scale = 0.18f * eased * sizeMul;
-            double half = scale * 1.15;        // половина длины кристалла
-            double wid = scale * 0.55;         // половина ширины
+            double half = scale * 1.35;        // половина высоты камня
 
-            // ось кристалла: по касательной орбиты, с наклоном (часть стоит почти вертикально, как на скриншоте)
-            Vec3 tangent = new Vec3(-Math.sin(rad), 0.0, Math.cos(rad));
-            double tilt = (seed1 - 0.35) * Math.PI * 0.9;
-            Vec3 axis = tangent.scale(Math.cos(tilt)).add(0.0, Math.sin(tilt), 0.0).normalize();
-            Vec3 helper = Math.abs(axis.y) < 0.9 ? new Vec3(0, 1, 0) : new Vec3(1, 0, 0);
-            Vec3 p = axis.cross(helper).normalize();
-            Vec3 q = axis.cross(p);
-            double spin = Math.toRadians(time * 1.5 + i * 40.0);               // вращение вокруг оси: грани «играют»
-            Vec3 pr = p.scale(Math.cos(spin)).add(q.scale(Math.sin(spin)));
-            Vec3 qr = q.scale(Math.cos(spin)).subtract(p.scale(Math.sin(spin)));
+            // Камень стоит вертикально и повёрнут по углу своей орбиты (как dirAngle в оригинале),
+            // поэтому все кристаллы выглядят одинаково аккуратно и просто обходят цель по кругу.
+            Vec3 axis = new Vec3(0.0, 1.0, 0.0);
+            Vec3 radial = new Vec3(Math.cos(rad), 0.0, Math.sin(rad));
+            Vec3 tang = new Vec3(-Math.sin(rad), 0.0, Math.cos(rad));
+            double wr = scale * 0.50;          // толщина по радиусу
+            double wt = scale * 0.78;          // ширина вдоль орбиты (камень «смотрит» наружу широкой гранью)
 
             Vec3 top = c.add(axis.scale(half)), bot = c.subtract(axis.scale(half));
-            Vec3[] eq = {c.add(pr.scale(wid)), c.add(qr.scale(wid)), c.subtract(pr.scale(wid)), c.subtract(qr.scale(wid))};
+            Vec3[] eq = {c.add(radial.scale(wr)), c.add(tang.scale(wt)), c.subtract(radial.scale(wr)), c.subtract(tang.scale(wt))};
 
             List<Face> faces = new ArrayList<>();
             for (int k = 0; k < 4; k++) {
@@ -94,9 +90,11 @@ public final class CrystalsEsp {
             for (Face f : cr.faces()) {
                 float[] a = WorldProjection.toScreen(f.a()), b = WorldProjection.toScreen(f.b()), c = WorldProjection.toScreen(f.c());
                 if (a == null || b == null || c == null) continue;
-                // розово-белые грани: цвет темы, осветлённый по освещённости грани
-                int face = UiRenderer.lerpColor(color, 0xFFFFFFFF, 0.25f + 0.65f * f.shade());
-                face = UiRenderer.lerpColor(0xFF000000 | (color & 0xFFFFFF), face, 0.55f + 0.45f * f.shade());
+                // грани от тёмного оттенка цвета темы до светлого: видна объёмность камня
+                int dark = UiRenderer.lerpColor(0xFF000000, 0xFF000000 | (color & 0xFFFFFF), 0.50f);
+                int light = UiRenderer.lerpColor(0xFF000000 | (color & 0xFFFFFF), 0xFFFFFFFF, 0.80f);
+                float sh = (float) Math.pow(f.shade(), 1.4);
+                int face = UiRenderer.lerpColor(dark, light, sh);
                 ui.triangle(a[0], a[1], b[0], b[1], c[0], c[1], 0xFF000000 | face & 0xFFFFFF);
             }
         }
@@ -108,7 +106,7 @@ public final class CrystalsEsp {
         Vec3 mid = a.add(b).add(c).scale(1.0 / 3.0);
         if (n.dot(mid.subtract(center)) < 0.0) n = n.scale(-1.0);            // нормаль наружу
         if (n.dot(mid.subtract(camera)) >= 0.0) return;                      // задняя грань
-        float shade = Mth.clamp((float) (0.45 + 0.55 * Math.abs(n.dot(light))), 0.0f, 1.0f);
+        float shade = Mth.clamp((float) (0.15 + 0.85 * Math.abs(n.dot(light))), 0.0f, 1.0f);
         out.add(new Face(a, b, c, mid.distanceTo(camera), shade));
     }
 
