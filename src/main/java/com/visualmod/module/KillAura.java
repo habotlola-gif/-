@@ -3,6 +3,7 @@ package com.visualmod.module;
 import com.visualmod.FriendManager;
 import com.visualmod.setting.BooleanSetting;
 import com.visualmod.setting.NumberSetting;
+import com.visualmod.multipoint.MultipointPath;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.tags.ItemTags;
@@ -210,26 +211,42 @@ public final class KillAura extends Module {
     }
 
     /**
-     * Multipoint: точка прицеливания плавно «обходит» хитбокс (голова - корпус, влево - вправо),
-     * всегда оставаясь внутри него, поэтому удар засчитывается из любой точки круга.
-     * Плюс упреждение на скорость цели.
+     * Multipoint: точка прицеливания обходит хитбокс по пути из редактора (config/visualmod-multipoint.json),
+     * путь всегда внутри хитбокса, поэтому удар засчитывается из любой его точки.
+     * Настройки (скорость, дуга, размер, направление) в модуле Experimental. Плюс упреждение на скорость цели.
      */
     private Vec3 aimPoint(LocalPlayer player, Entity e) {
+        Experimental ex = ModuleManager.EXPERIMENTAL;
         Vec3 vel = new Vec3(e.getX() - e.xo, e.getY() - e.yo, e.getZ() - e.zo);
-        AABB box = e.getBoundingBox().move(vel.scale(ModuleManager.EXPERIMENTAL.predictTicks()));
+        AABB box = e.getBoundingBox().move(vel.scale(ex.predictTicks()));
         double hw = (box.maxX - box.minX) * 0.5 - AIM_MARGIN;
-        double hd = (box.maxZ - box.minZ) * 0.5 - AIM_MARGIN;
         double h = box.maxY - box.minY;
         Vec3 c = box.getCenter();
 
-        double t = (player.tickCount + (e.getId() % 17) * 3) * 1.0;
-        double ux = Math.sin(t * 0.27);
-        double uz = Math.cos(t * 0.41);
-        double uy = Math.sin(t * 0.33);
-        return new Vec3(
-                c.x + ux * hw * 0.75,
-                box.minY + h * (0.62 + 0.26 * uy),   // от груди до головы
-                c.z + uz * hd * 0.75);
+        float px, py;
+        if (ex.multipointOn()) {
+            double t = (player.tickCount + (e.getId() % 17) * 3) / 20.0 * ex.mpSpeedValue();
+            double phase = switch (ex.mpDirectionIndex()) {
+                case 1 -> 1.0 - (t - Math.floor(t));
+                case 2 -> { double f = t - Math.floor(t); yield f < 0.5 ? f * 2 : 2 - f * 2; }
+                default -> t - Math.floor(t);
+            };
+            float[] pt = MultipointPath.sample(phase, ex.mpArcValue(), ex.mpSizeValue());
+            px = pt[0];
+            py = pt[1];
+        } else {
+            px = 0.0f;
+            py = 0.75f;
+        }
+
+        // «вправо» относительно взгляда на цель
+        Vec3 eye = player.getEyePosition();
+        double dx = c.x - eye.x, dz = c.z - eye.z;
+        double len = Math.max(1e-6, Math.hypot(dx, dz));
+        double rx = -dz / len, rz = dx / len;
+        double wx = Mth.clamp(c.x + rx * px * hw, box.minX + AIM_MARGIN, box.maxX - AIM_MARGIN);
+        double wz = Mth.clamp(c.z + rz * px * hw, box.minZ + AIM_MARGIN, box.maxZ - AIM_MARGIN);
+        return new Vec3(wx, box.minY + h * py, wz);
     }
 
     private static Vec3 viewVector(float yaw, float pitch) {

@@ -1,0 +1,307 @@
+package com.visualmod.gui;
+
+import com.mojang.blaze3d.platform.Window;
+import com.visualmod.module.ModuleManager;
+import com.visualmod.multipoint.MultipointPath;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.input.KeyEvent;
+import net.minecraft.client.input.MouseButtonEvent;
+import net.minecraft.network.chat.Component;
+
+import java.util.List;
+
+/**
+ * Редактор пути Multipoint: манекен (вид спереди, рамка = хитбокс), на нём замкнутый путь из точек.
+ * ЛКМ по точке: двигать точку. ЛКМ по линии: двигать линию целиком (обе её точки).
+ * ПКМ по линии: добавить точку. ПКМ по точке: удалить (минимум 3).
+ * Белая точка показывает, как прицел будет бегать по пути с текущими настройками.
+ */
+public class MultipointEditorScreen extends Screen {
+    private final Screen parent;
+    private final long openedAt = System.nanoTime();
+
+    private int dragPoint = -1;           // индекс двигаемой точки
+    private int dragSegment = -1;         // индекс двигаемой линии (от точки i к i+1)
+    private float segGrabX, segGrabY;     // где схватили линию (в нормализованных координатах)
+    private float[] segStartA, segStartB;
+
+    // раскладка (в пикселях окна), обновляется при каждом кадре
+    private int rx, ry, rw, rh;
+    private int btnResetX, btnDoneX, btnY, btnW, btnH;
+    private float dpScale = 1.0f;
+
+    private double dp(float v) { return v * this.dpScale; }
+
+    public MultipointEditorScreen(Screen parent) {
+        super(Component.literal("Multipoint"));
+        this.parent = parent;
+    }
+
+    // ---- координаты ----
+
+    private float toPx(float nx) { return this.rx + (nx + 1f) / 2f * this.rw; }
+    private float toPy(float ny) { return this.ry + (1f - ny) * this.rh; }
+    private float toNx(double px) { return (float) ((px - this.rx) / this.rw * 2.0 - 1.0); }
+    private float toNy(double py) { return (float) (1.0 - (py - this.ry) / this.rh); }
+
+    private double mousePx() {
+        Window w = this.minecraft.getWindow();
+        return this.minecraft.mouseHandler.xpos() * (double) w.getWidth() / (double) Math.max(1, w.getScreenWidth());
+    }
+
+    private double mousePy() {
+        Window w = this.minecraft.getWindow();
+        return this.minecraft.mouseHandler.ypos() * (double) w.getHeight() / (double) Math.max(1, w.getScreenHeight());
+    }
+
+    // ---- отрисовка ----
+
+    @Override
+    public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float delta) {
+        graphics.fill(0, 0, this.width, this.height, 0xB0000000);
+    }
+
+    @Override
+    public void render(GuiGraphics graphics, int mouseX, int mouseY, float delta) {
+        UiRenderer ui = UiRenderer.begin(graphics);
+        try {
+            draw(ui, (int) mousePx(), (int) mousePy());
+        } finally {
+            ui.end();
+        }
+    }
+
+    private void layout(UiRenderer ui) {
+        this.dpScale = ui.dp(100f) / 100f;
+        int sw = this.width * ui.guiScale(), sh = this.height * ui.guiScale();
+        int pw = Math.min(ui.dp(440f), sw - ui.dp(24f));
+        int ph = Math.min(ui.dp(640f), sh - ui.dp(24f));
+        int px = (sw - pw) / 2, py = (sh - ph) / 2;
+        int top = py + ui.dp(78f), bottom = py + ph - ui.dp(62f);
+        this.rh = Math.max(ui.dp(160f), bottom - top);
+        this.rw = Math.min((int) (this.rh * 0.62f), pw - ui.dp(48f));
+        this.rx = px + (pw - this.rw) / 2;
+        this.ry = top;
+        this.btnW = ui.dp(120f);
+        this.btnH = ui.dp(32f);
+        this.btnY = py + ph - ui.dp(48f);
+        this.btnResetX = px + pw / 2 - this.btnW - ui.dp(8f);
+        this.btnDoneX = px + pw / 2 + ui.dp(8f);
+        // панель
+        ui.shadow(px, py, pw, ph, ui.dp(14f), ui.dp(26f), 0x99000000);
+        ui.roundRectBordered(px, py, pw, ph, ui.dp(14f), 1, 0xFF2B2B33, 0xF2101014);
+        ui.textCentered(UiRenderer.TextStyle.TITLE, "Расположение точек", px, py + ui.dp(8f), ui.dp(30f), -1);
+        ui.textCentered(UiRenderer.TextStyle.SMALL, "ЛКМ: двигать точку или линию", px, py + ui.dp(36f), ui.dp(14f), -7566184);
+        ui.textCentered(UiRenderer.TextStyle.SMALL, "ПКМ: на линии — добавить точку, на точке — удалить", px, py + ui.dp(52f), ui.dp(14f), -7566184);
+    }
+
+    private void draw(UiRenderer ui, int mx, int my) {
+        layout(ui);
+        // рамка хитбокса
+        ui.roundRectBordered(this.rx, this.ry, this.rw, this.rh, ui.dp(8f), 2, 0xFF4A4A58, 0xFF17171D);
+
+        drawMannequin(ui);
+
+        List<float[]> pts = MultipointPath.points();
+        int n = pts.size();
+
+        // сглаженный предпросмотр (тонкая линия) с текущими настройками дуги и размера
+        var ex = ModuleManager.EXPERIMENTAL;
+        List<float[]> smooth = MultipointPath.smoothed(ex.mpArcValue(), ex.mpSizeValue());
+        for (int i = 0; i < smooth.size(); i++) {
+            float[] a = smooth.get(i), b = smooth.get((i + 1) % smooth.size());
+            ui.capsule(toPx(a[0]), toPy(a[1]), toPx(b[0]), toPy(b[1]), ui.dp(2f), 1, 0x66FFFFFF);
+        }
+
+        // линии контура (то, что двигается мышью)
+        int hoverSeg = this.dragSegment >= 0 ? this.dragSegment : (hitPoint(mx, my) >= 0 ? -1 : hitSegment(mx, my));
+        for (int i = 0; i < n; i++) {
+            float[] a = pts.get(i), b = pts.get((i + 1) % n);
+            int col = i == hoverSeg ? 0xFFFF6B6B : 0xFFE03A3A;
+            ui.capsule(toPx(a[0]), toPy(a[1]), toPx(b[0]), toPy(b[1]), ui.dp(i == hoverSeg ? 4f : 3f), 2, col);
+        }
+        // точки
+        int hoverPt = this.dragPoint >= 0 ? this.dragPoint : hitPoint(mx, my);
+        for (int i = 0; i < n; i++) {
+            float[] p = pts.get(i);
+            int size = ui.dp(i == hoverPt ? 14f : 11f);
+            int x = Math.round(toPx(p[0])) - size / 2, y = Math.round(toPy(p[1])) - size / 2;
+            ui.blurCircle(x, y, size, 2, i == hoverPt ? 0xFFFFFFFF : 0xFFFFD0D0);
+            ui.blurCircle(x + ui.dp(3f), y + ui.dp(3f), size - ui.dp(6f), 1, 0xFFE03A3A);
+        }
+
+        // бегущая точка прицела
+        double t = (System.nanoTime() - this.openedAt) / 1.0e9 * ex.mpSpeedValue();
+        double f = t - Math.floor(t);
+        double phase = switch (ex.mpDirectionIndex()) { case 1 -> 1 - f; case 2 -> f < 0.5 ? f * 2 : 2 - f * 2; default -> f; };
+        float[] s = MultipointPath.sample(phase, ex.mpArcValue(), ex.mpSizeValue());
+        int dot = ui.dp(10f);
+        ui.blurCircle(Math.round(toPx(s[0])) - dot, Math.round(toPy(s[1])) - dot, dot * 2, 8, 0x88FFFFFF);
+        ui.blurCircle(Math.round(toPx(s[0])) - dot / 2, Math.round(toPy(s[1])) - dot / 2, dot, 1, 0xFFFFFFFF);
+
+        // кнопки
+        button(ui, this.btnResetX, "Сбросить", mx, my);
+        button(ui, this.btnDoneX, "Готово", mx, my);
+    }
+
+    private void button(UiRenderer ui, int x, String label, int mx, int my) {
+        boolean hov = mx >= x && mx < x + this.btnW && my >= this.btnY && my < this.btnY + this.btnH;
+        ui.roundRect(x, this.btnY, this.btnW, this.btnH, ui.dp(8f), hov ? 0xFF3A3A48 : 0xFF26262F);
+        int tw = ui.textWidth(UiRenderer.TextStyle.BODY, label);
+        ui.textCentered(UiRenderer.TextStyle.BODY, label, x + (this.btnW - tw) / 2, this.btnY, this.btnH, -1);
+    }
+
+    /** Стилизованный манекен: голова, тело, руки, ноги по пропорциям модели игрока (32 пикселя высотой). */
+    private void drawMannequin(UiRenderer ui) {
+        int c = 0xFF2A2A36, edge = 0xFF3A3A4A;
+        // голова (верхние 25%), тело, ноги (нижние 37.5%)
+        part(ui, -0.62f, 1.00f, 0.62f, 0.75f, c, edge);        // голова
+        part(ui, -0.62f, 0.75f, 0.62f, 0.375f, c, edge);       // торс
+        part(ui, -1.00f, 0.75f, -0.66f, 0.375f, c, edge);      // левая рука
+        part(ui, 0.66f, 0.75f, 1.00f, 0.375f, c, edge);        // правая рука
+        part(ui, -0.62f, 0.375f, -0.03f, 0.0f, c, edge);       // левая нога
+        part(ui, 0.03f, 0.375f, 0.62f, 0.0f, c, edge);         // правая нога
+        // лицо (глаза) для ориентации
+        int ex = Math.max(2, this.rw / 40), ey = Math.max(2, this.rh / 60);
+        ui.rect(Math.round(toPx(-0.36f)), Math.round(toPy(0.90f)), ex * 3, ey, 0xFFEFEFF5);
+        ui.rect(Math.round(toPx(0.18f)), Math.round(toPy(0.90f)), ex * 3, ey, 0xFFEFEFF5);
+    }
+
+    private void part(UiRenderer ui, float x0, float y0, float x1, float y1, int fill, int edge) {
+        int x = Math.round(toPx(x0)), y = Math.round(toPy(y0));
+        int w = Math.round(toPx(x1)) - x, h = Math.round(toPy(y1)) - y;
+        ui.roundRectBordered(x, y, w, h, 3, 1, edge, fill);
+    }
+
+    // ---- попадания ----
+
+    private int hitPoint(double mx, double my) {
+        List<float[]> pts = MultipointPath.points();
+        double r = dp(11f);
+        for (int i = pts.size() - 1; i >= 0; i--) {
+            double dx = toPx(pts.get(i)[0]) - mx, dy = toPy(pts.get(i)[1]) - my;
+            if (dx * dx + dy * dy <= r * r) return i;
+        }
+        return -1;
+    }
+
+    private int hitSegment(double mx, double my) {
+        List<float[]> pts = MultipointPath.points();
+        int n = pts.size();
+        double best = dp(9f);
+        int found = -1;
+        for (int i = 0; i < n; i++) {
+            float[] a = pts.get(i), b = pts.get((i + 1) % n);
+            double d = distToSegment(mx, my, toPx(a[0]), toPy(a[1]), toPx(b[0]), toPy(b[1]));
+            if (d <= best) { best = d; found = i; }
+        }
+        return found;
+    }
+
+    private static double distToSegment(double px, double py, double ax, double ay, double bx, double by) {
+        double vx = bx - ax, vy = by - ay, l2 = vx * vx + vy * vy;
+        double t = l2 == 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / l2));
+        return Math.hypot(px - (ax + t * vx), py - (ay + t * vy));
+    }
+
+    // ---- ввод ----
+
+    private boolean inButton(double mx, double my, int x) {
+        return mx >= x && mx < x + this.btnW && my >= this.btnY && my < this.btnY + this.btnH;
+    }
+
+    @Override
+    public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+        double mx = mousePx(), my = mousePy();
+        List<float[]> pts = MultipointPath.points();
+        if (event.button() == 0) {
+            if (inButton(mx, my, this.btnResetX)) { MultipointPath.reset(); MultipointPath.save(); return true; }
+            if (inButton(mx, my, this.btnDoneX)) { this.onClose(); return true; }
+            int p = hitPoint(mx, my);
+            if (p >= 0) { this.dragPoint = p; return true; }
+            int s = hitSegment(mx, my);
+            if (s >= 0) {
+                this.dragSegment = s;
+                this.segGrabX = toNx(mx);
+                this.segGrabY = toNy(my);
+                this.segStartA = pts.get(s).clone();
+                this.segStartB = pts.get((s + 1) % pts.size()).clone();
+                return true;
+            }
+        } else if (event.button() == 1) {
+            int p = hitPoint(mx, my);
+            if (p >= 0) {
+                if (pts.size() > 3) { pts.remove(p); MultipointPath.touch(); MultipointPath.save(); }
+                return true;
+            }
+            int s = hitSegment(mx, my);
+            if (s >= 0) {
+                pts.add(s + 1, new float[]{MultipointPath.clampX(toNx(mx)), MultipointPath.clampY(toNy(my))});
+                MultipointPath.touch();
+                MultipointPath.save();
+                return true;
+            }
+        }
+        return super.mouseClicked(event, doubleClick);
+    }
+
+    @Override
+    public boolean mouseDragged(MouseButtonEvent event, double dx, double dy) {
+        double mx = mousePx(), my = mousePy();
+        List<float[]> pts = MultipointPath.points();
+        if (this.dragPoint >= 0 && this.dragPoint < pts.size()) {
+            float[] p = pts.get(this.dragPoint);
+            p[0] = MultipointPath.clampX(toNx(mx));
+            p[1] = MultipointPath.clampY(toNy(my));
+            MultipointPath.touch();
+            return true;
+        }
+        if (this.dragSegment >= 0 && this.dragSegment < pts.size()) {
+            float dnx = toNx(mx) - this.segGrabX, dny = toNy(my) - this.segGrabY;
+            // сдвигаем линию целиком, но не даём ей выйти за хитбокс
+            float lo = Math.max(-1f - Math.min(this.segStartA[0], this.segStartB[0]), -1f);
+            dnx = Math.max(-1f - Math.min(this.segStartA[0], this.segStartB[0]),
+                    Math.min(1f - Math.max(this.segStartA[0], this.segStartB[0]), dnx));
+            dny = Math.max(MultipointPath.MIN_Y - Math.min(this.segStartA[1], this.segStartB[1]),
+                    Math.min(MultipointPath.MAX_Y - Math.max(this.segStartA[1], this.segStartB[1]), dny));
+            float[] a = pts.get(this.dragSegment), b = pts.get((this.dragSegment + 1) % pts.size());
+            a[0] = this.segStartA[0] + dnx; a[1] = this.segStartA[1] + dny;
+            b[0] = this.segStartB[0] + dnx; b[1] = this.segStartB[1] + dny;
+            MultipointPath.touch();
+            return true;
+        }
+        return super.mouseDragged(event, dx, dy);
+    }
+
+    @Override
+    public boolean mouseReleased(MouseButtonEvent event) {
+        if (this.dragPoint >= 0 || this.dragSegment >= 0) {
+            this.dragPoint = -1;
+            this.dragSegment = -1;
+            MultipointPath.save();
+            return true;
+        }
+        return super.mouseReleased(event);
+    }
+
+    @Override
+    public boolean keyPressed(KeyEvent event) {
+        if (event.isEscape()) {
+            this.onClose();
+            return true;
+        }
+        return super.keyPressed(event);
+    }
+
+    @Override
+    public void onClose() {
+        MultipointPath.save();
+        this.minecraft.setScreen(this.parent);
+    }
+
+    @Override
+    public boolean isPauseScreen() {
+        return false;
+    }
+}

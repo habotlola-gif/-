@@ -24,6 +24,8 @@ import java.util.concurrent.Executors;
  */
 public final class DiscordRpc extends Module {
     private static final String LOGO_KEY = "m_logo";
+    /** Application ID по умолчанию (публичный). Можно переопределить в config/visualmod-discord.txt. */
+    private static final String DEFAULT_CLIENT_ID = "1568344662866001940";
     private static final int UPDATE_EVERY_TICKS = 100; // раз в 5 секунд
 
     public final BooleanSetting showServer = this.setting(new BooleanSetting("show_server", "Показывать адрес сервера", false));
@@ -156,8 +158,9 @@ public final class DiscordRpc extends Module {
         Path file = FabricLoader.getInstance().getConfigDir().resolve("visualmod-discord.txt");
         try {
             if (!Files.exists(file)) {
-                Files.writeString(file, "# Вставь сюда Application ID из https://discord.com/developers/applications (только цифры, одной строкой)\n");
-                return null;
+                Files.writeString(file, "# Application ID по умолчанию уже зашит в мод. Чтобы использовать свой, впиши его строкой id=ЦИФРЫ\n"
+                        + "# Анимированная иконка: image=https://прямая-ссылка/на/файл.gif\n");
+                return DEFAULT_CLIENT_ID;
             }
             for (String line : Files.readAllLines(file)) {
                 String s = line.strip();
@@ -166,6 +169,6 @@ public final class DiscordRpc extends Module {
             }
         } catch (IOException ignored) {
         }
-        return null;
+        return DEFAULT_CLIENT_ID;
     }
 }

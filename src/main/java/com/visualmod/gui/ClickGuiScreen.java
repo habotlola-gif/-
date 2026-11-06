@@ -8,6 +8,7 @@ import com.visualmod.module.Keybind;
 import com.visualmod.module.Module;
 import com.visualmod.module.ModuleManager;
 import com.visualmod.setting.BooleanSetting;
+import com.visualmod.setting.ButtonSetting;
 import com.visualmod.setting.ColorSetting;
 import com.visualmod.setting.KeybindSetting;
 import com.visualmod.setting.ModeSetting;
@@ -297,6 +298,9 @@ extends Screen {
     }
 
     private int settingHeight(UiRenderer ui, Setting<?> setting, int innerW) {
+        if (setting instanceof ButtonSetting) {
+            return ui.dp(24.0f);
+        }
         if (setting instanceof BooleanSetting || setting instanceof KeybindSetting) {
             return ui.dp(18.0f);
         }
@@ -443,6 +447,15 @@ extends Screen {
             int knobX = sx + ui.dp(2.0f) + Math.round((float)(sw - ui.dp(4.0f) - knob) * p);
             ui.roundRect(knobX, sy + ui.dp(2.0f), knob, knob, knob / 2, UiRenderer.lerpColor(-8947841, -16777216, p));
             this.addSettingHit(module, setting, x, top, w, bottom - top, 0, 0, -1);
+            return;
+        }
+        if (setting instanceof ButtonSetting) {
+            int by = y + ui.dp(1.0f);
+            int bh = h - ui.dp(2.0f);
+            ui.roundRect(x, by, w, bh, ui.dp(6.0f), hovered ? -13684936 : -14277074);
+            int tw = ui.textWidth(UiRenderer.TextStyle.SMALL, setting.getName());
+            ui.textCentered(UiRenderer.TextStyle.SMALL, setting.getName(), x + (w - tw) / 2, by, bh, hovered ? -1 : -3158058);
+            this.addSettingHit(module, setting, x, top, w, bottom - top, 0, 0, -4);
             return;
         }
         if (setting instanceof KeybindSetting) {
@@ -823,6 +836,12 @@ extends Screen {
             } else if (button == 1) {
                 keybind.setBind(-1);
                 ModuleManager.save();
+            }
+            return true;
+        }
+        if (setting2 instanceof ButtonSetting) {
+            if (button == 0) {
+                ((ButtonSetting)setting2).press();
             }
             return true;
         }
