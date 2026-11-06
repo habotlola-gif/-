@@ -38,6 +38,7 @@ public final class DiscordRpc extends Module {
     private long startedAt;
     private int ticks;
     private String lastSent = "";
+    private String imageKey = LOGO_KEY;
 
     public DiscordRpc() {
         super("DiscordRPC", "Статус в Discord: что делаешь и какие модули включены", Category.MISC);
@@ -51,6 +52,7 @@ public final class DiscordRpc extends Module {
             this.startedAt = System.currentTimeMillis() / 1000L;
             this.ticks = UPDATE_EVERY_TICKS;
             this.lastSent = "";
+            this.imageKey = readImage();
         } else if (!enabled && was) {
             this.worker.execute(this::shutdown);
         }
@@ -97,7 +99,7 @@ public final class DiscordRpc extends Module {
         ts.addProperty("start", this.startedAt);
         activity.add("timestamps", ts);
         JsonObject assets = new JsonObject();
-        assets.addProperty("large_image", LOGO_KEY);
+        assets.addProperty("large_image", this.imageKey);
         assets.addProperty("large_text", "Visual Mod");
         activity.add("assets", assets);
         return activity;
@@ -131,6 +133,24 @@ public final class DiscordRpc extends Module {
         }
     }
 
+    /**
+     * Картинка статуса: строка вида "image=m_logo" или "image=https://.../anim.gif" в
+     * config/visualmod-discord.txt. По умолчанию ключ m_logo (статичная картинка из Art Assets).
+     */
+    private static String readImage() {
+        Path file = FabricLoader.getInstance().getConfigDir().resolve("visualmod-discord.txt");
+        try {
+            if (Files.exists(file)) {
+                for (String line : Files.readAllLines(file)) {
+                    String s = line.strip();
+                    if (s.startsWith("image=") && s.length() > 6) return s.substring(6).strip();
+                }
+            }
+        } catch (IOException ignored) {
+        }
+        return LOGO_KEY;
+    }
+
     /** Application ID из config/visualmod-discord.txt. Если файла нет — создаёт с подсказкой. */
     private static String readClientId() {
         Path file = FabricLoader.getInstance().getConfigDir().resolve("visualmod-discord.txt");
@@ -141,6 +161,7 @@ public final class DiscordRpc extends Module {
             }
             for (String line : Files.readAllLines(file)) {
                 String s = line.strip();
+                if (s.startsWith("id=")) s = s.substring(3).strip();
                 if (!s.isEmpty() && !s.startsWith("#") && s.chars().allMatch(Character::isDigit)) return s;
             }
         } catch (IOException ignored) {
