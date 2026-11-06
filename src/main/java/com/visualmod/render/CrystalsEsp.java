@@ -11,7 +11,7 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * Режим «Кристаллы» для TargetESP: 14 объёмных ромбов-самоцветов (стоят вертикально, повёрнуты по углу своей орбиты) парят вокруг цели на разной высоте
+ * Режим «Кристаллы» для TargetESP: 15 объёмных ромбов-самоцветов (три ровных яруса по пять) (стоят вертикально, повёрнуты по углу своей орбиты) парят вокруг цели на разной высоте
  * и расстоянии и обходят её по кругу. У каждого мягкое свечение и грани разной яркости.
  *
  * Расстановка и движение взяты из присланного кода (семена по индексу, орбита по времени, радиус/высота),
@@ -19,7 +19,10 @@ import java.util.List;
  * {@link WorldProjection}, грани заливаются треугольниками, дальние кристаллы рисуются первыми.
  */
 public final class CrystalsEsp {
-    private static final int COUNT = 14;
+    private static final int TIERS = 3;               // ярусы: ноги, грудь, голова
+    private static final int PER_TIER = 5;            // кристаллов в ярусе
+    private static final int COUNT = TIERS * PER_TIER;
+    private static final float[] TIER_HEIGHT = {0.14f, 0.52f, 0.90f};
 
     private CrystalsEsp() {
     }
@@ -40,14 +43,13 @@ public final class CrystalsEsp {
         List<Crystal> crystals = new ArrayList<>();
 
         for (int i = 0; i < COUNT; i++) {
-            float seed1 = (float) Math.sin(i * 1.7f + 0.3f) * 0.5f + 0.5f;
-            float seed2 = (float) Math.cos(i * 2.3f + 0.7f) * 0.5f + 0.5f;
-            float seed3 = (float) Math.sin(i * 3.1f + 1.1f) * 0.5f + 0.5f;
-
-            float angle = time + i * (360.0f / COUNT) + seed1 * 12.0f;
-            float radius = halfWidth + 0.25f + seed3 * 0.15f;
+            // Ровные ярусы: в каждом PER_TIER камней через равные углы, соседние ярусы сдвинуты на полшага.
+            int tier = i / PER_TIER, slot = i % PER_TIER;
+            float angle = time + slot * (360.0f / PER_TIER) + tier * (180.0f / PER_TIER);
+            float radius = halfWidth + 0.24f;
             double rad = Math.toRadians(angle);
-            Vec3 c = base.add(radius * Math.cos(rad), seed2 * height, radius * Math.sin(rad));
+            double bob = 0.03 * Math.sin(Math.toRadians(time * 1.2 + tier * 120.0));   // лёгкое парение всего яруса
+            Vec3 c = base.add(radius * Math.cos(rad), TIER_HEIGHT[tier] * height + bob, radius * Math.sin(rad));
 
             float scale = 0.18f * eased * sizeMul;
             double half = scale * 1.35;        // половина высоты камня
