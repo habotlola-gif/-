@@ -23,15 +23,18 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * AutoSwap: по бинду берёт из хотбара предмет, в названии которого есть заданный текст,
- * и меняет его с предметом в оффхенде (штатный "swap with offhand").
+ * AutoSwap: бинд переключает предмет в оффхенде по кругу между названиями из правила.
+ * names = [A, B]: в оффхенде A -> берём B, в оффхенде B -> берём A, иначе берём A.
+ * names = [X]: просто положить X в оффхенд (например "талик -> сфера").
+ * Предмет берётся из хотбара и меняется с оффхендом (штатный "swap with offhand").
  * Правила лежат в config/poltclient-swaps.json.
  */
 public class AutoSwap {
     public static class Rule {
-        public String name;   // часть названия предмета (без учёта регистра)
-        public int key;       // GLFW-код клавиши
-        public Rule(String name, int key) { this.name = name; this.key = key; }
+        public List<String> names; // части названий предметов (без учёта регистра)
+        public int key;            // GLFW-код клавиши
+        public Rule(List<String> names, int key) { this.names = names; this.key = key; }
+        String label() { return String.join(" / ", names); }
     }
 
     private static final int COOLDOWN_TICKS = 4;
@@ -44,7 +47,7 @@ public class AutoSwap {
         loadRules();
         for (Rule r : rules) {
             binds.add(KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                    "Swap: " + r.name, InputUtil.Type.KEYSYM, r.key, "category.poltclient")));
+                    "Swap: " + r.label(), InputUtil.Type.KEYSYM, r.key, "category.poltclient")));
         }
     }
 
@@ -54,8 +57,9 @@ public class AutoSwap {
         try {
             if (!Files.exists(file)) {
                 List<Rule> defaults = List.of(
-                        new Rule("Паладин", GLFW.GLFW_KEY_Z),
-                        new Rule("Карцер", GLFW.GLFW_KEY_X));
+                        new Rule(List.of("Сфера A", "Сфера B"), GLFW.GLFW_KEY_Z),
+                        new Rule(List.of("Талисман A", "Талисман B"), GLFW.GLFW_KEY_X),
+                        new Rule(List.of("Сфера A"), GLFW.GLFW_KEY_C));
                 Files.writeString(file, gson.toJson(defaults));
             }
             try (Reader reader = Files.newBufferedReader(file)) {
@@ -79,20 +83,29 @@ public class AutoSwap {
         }
     }
 
-    private boolean matches(ItemStack s, Rule r) {
-        return !s.isEmpty() && s.getName().getString().toLowerCase().contains(r.name.toLowerCase());
+    private boolean matches(ItemStack s, String name) {
+        return !s.isEmpty() && s.getName().getString().toLowerCase().contains(name.toLowerCase());
     }
 
     private void swap(MinecraftClient mc, Rule r) {
         var p = mc.player;
-        if (matches(p.getOffHandStack(), r)) return; // уже в оффхенде
+
+        // что сейчас в оффхенде -> что нужно взять
+        String want = r.names.get(0);
+        for (int k = 0; k < r.names.size(); k++) {
+            if (matches(p.getOffHandStack(), r.names.get(k))) {
+                if (r.names.size() == 1) return; // уже лежит нужное
+                want = r.names.get((k + 1) % r.names.size());
+                break;
+            }
+        }
 
         int slot = -1;
         for (int i = 0; i < 9; i++) {
-            if (matches(p.getInventory().getStack(i), r)) { slot = i; break; }
+            if (matches(p.getInventory().getStack(i), want)) { slot = i; break; }
         }
         if (slot == -1) {
-            p.sendMessage(Text.literal("[Polt] В хотбаре нет предмета: " + r.name), true);
+            p.sendMessage(Text.literal("[Polt] В хотбаре нет предмета: " + want), true);
             return;
         }
 
