@@ -82,20 +82,11 @@ extends Module {
         if (client.level == null) {
             return;
         }
-        switch (this.weather.getIndex()) {
-            case 2: 
-            case 3: {
-                float f = 1.0f;
-                break;
-            }
-            case 1: {
-                float f = 0.0f;
-                break;
-            }
-            default: {
-                float f = target = -1.0f;
-            }
-        }
+        target = switch (this.weather.getIndex()) {
+            case 2, 3 -> 1.0f;
+            case 1 -> 0.0f;
+            default -> -1.0f;
+        };
         if (target < 0.0f) {
             this.rainBlend = -1.0f;
         } else {
