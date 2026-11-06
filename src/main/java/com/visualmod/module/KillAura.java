@@ -55,7 +55,11 @@ public final class KillAura extends Module {
     public final ModeSetting critMode = this.setting(new ModeSetting("crit_mode", "Криты", "Выкл", "Ждать падения", "Только криты"));
     public final BooleanSetting weaponOnly = this.setting(new BooleanSetting("weapon_only", "Только с оружием", true));
     public final BooleanSetting skipAllies = this.setting(new BooleanSetting("skip_allies", "Не бить союзников", true));
-    public final BooleanSetting resetSprint = this.setting(new BooleanSetting("reset_sprint", "Сброс спринта", true));
+    /**
+     * Сброс спринта после удара (для отдачи). Выкл: не трогаем. Обычный: W отпускается на 2 тика после каждого удара.
+     * Легитный: как W-tap живого игрока: W отпускается на 1 тик и только когда стоим на земле, без остановки в воздухе.
+     */
+    public final ModeSetting sprintMode = this.setting(new ModeSetting("sprint_reset_mode", "Сброс спринта", "Выкл", "Обычный", "Легитный"));
     public final SprintResetter sprintReset = new SprintResetter();
 
     private static final int MAX_CRIT_WAIT_TICKS = 7;
@@ -82,6 +86,7 @@ public final class KillAura extends Module {
     public KillAura() {
         super("KillAura", "Silent-наведение и удар по цели", Category.COMBAT);
         this.critMode.setIndex(1);
+        this.sprintMode.setIndex(1);
         this.fov.visibleWhen(() -> !this.isRage());
         this.smoothness.visibleWhen(() -> !this.isRage());
     }
@@ -198,8 +203,11 @@ public final class KillAura extends Module {
         player.swing(InteractionHand.MAIN_HAND);
         ModuleManager.actedThisTick = true;
         this.critWait = 0;
-        if (this.resetSprint.isOn() && wasSprinting) {
+        int sprintIndex = this.sprintMode.getIndex();
+        if (wasSprinting && sprintIndex == 1) {
             this.sprintReset.start(2, false);
+        } else if (wasSprinting && sprintIndex == 2 && player.onGround()) {
+            this.sprintReset.start(1, false);
         }
     }
 
