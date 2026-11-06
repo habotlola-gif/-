@@ -10,6 +10,10 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
+import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.ClickType;
@@ -89,7 +93,7 @@ extends Module {
             if (this.tickNumber >= this.readyAtTick) {
                 if (ItemStack.matches((ItemStack)player.getOffhandItem(), (ItemStack)this.expectedOffhand) && ItemStack.matches((ItemStack)player.inventoryMenu.getSlot(this.source).getItem(), (ItemStack)this.expectedSource) && player.inventoryMenu.getCarried().isEmpty()) {
                 } else {
-                    AutoSwap.message("\u00a7cAutoSwap: \u0441\u0435\u0440\u0432\u0435\u0440 \u043d\u0435 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u043b \u043e\u0431\u043c\u0435\u043d");
+                    AutoSwap.message("§cAutoSwap: сервер не подтвердил обмен (слот " + this.source + "), попробуй ещё раз");
                 }
                 this.reset();
             }
@@ -99,34 +103,54 @@ extends Module {
             this.reset();
             return;
         }
-        if (ModuleManager.CLICK_ACTIONS.isBusy() || ModuleManager.actedThisTick || client.options.keyAttack.isDown() || client.options.keyUse.isDown() || client.options.keySwapOffhand.isDown() || client.options.keyDrop.isDown() || client.options.keyPickItem.isDown() || player.isUsingItem()) {
+        // Предмет в хотбаре меняется как клавишей F (без инвентаря), предмет в сумке одним кликом «обмен с оффхендом».
+        boolean viaHotbar = this.source >= 36 && this.source <= 44;
+        if (player.isUsingItem() || ModuleManager.CLICK_ACTIONS.isBusy()
+                || (!viaHotbar && (ModuleManager.actedThisTick || client.options.keyAttack.isDown() || client.options.keyUse.isDown()
+                || client.options.keySwapOffhand.isDown() || client.options.keyDrop.isDown() || client.options.keyPickItem.isDown()))) {
             this.pauseArmed = false;
             this.pauseTicks = 0;
             return;
         }
-        this.pauseArmed = true;
-        if (this.pauseTicks < 2) {
+        // Для клика по сумке 2 тика стоим на месте (инвентарные проверки), для хотбара пауза не нужна.
+        this.pauseArmed = !viaHotbar;
+        if (!viaHotbar && this.pauseTicks < 2) {
             return;
         }
         int type = this.targetType;
         if (!this.matches(player.inventoryMenu.getSlot(this.source).getItem(), type)) {
             this.source = this.findSlot(player, type);
+            viaHotbar = this.source >= 36 && this.source <= 44;
         }
-        if (this.source < 0 || !player.inventoryMenu.getCarried().isEmpty()) {
-            AutoSwap.message("\u00a7cAutoSwap: \u043f\u0440\u0435\u0434\u043c\u0435\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d \u0438\u043b\u0438 \u0437\u0430\u043d\u044f\u0442 \u043a\u0443\u0440\u0441\u043e\u0440");
+        if (this.source < 0) {
+            AutoSwap.message("§cAutoSwap: предмет пропал из инвентаря (" + TYPE_NAMES[type] + ")");
+            this.reset();
+            return;
+        }
+        if (!player.inventoryMenu.getCarried().isEmpty()) {
+            AutoSwap.message("§cAutoSwap: курсор занят предметом, обмен отменён");
             this.reset();
             return;
         }
         this.expectedOffhand = player.inventoryMenu.getSlot(this.source).getItem().copy();
         this.expectedSource = player.getOffhandItem().copy();
-        int container = player.inventoryMenu.containerId;
-        client.gameMode.handleInventoryMouseClick(container, this.source, 0, ClickType.PICKUP, (Player)player);
-        client.gameMode.handleInventoryMouseClick(container, 45, 0, ClickType.PICKUP, (Player)player);
-        client.gameMode.handleInventoryMouseClick(container, this.source, 0, ClickType.PICKUP, (Player)player);
-        this.readyAtTick = this.tickNumber + Math.max(2, Math.min(30, (AutoSwap.latencyMs(client, player) + 49) / 50 + 1));
+        ClientPacketListener net = client.getConnection();
+        if (net == null) {
+            this.reset();
+            return;
+        }
+        if (viaHotbar) {
+            int original = player.getInventory().getSelectedSlot();
+            net.send(new ServerboundSetCarriedItemPacket(this.source - 36));
+            net.send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.SWAP_ITEM_WITH_OFFHAND, BlockPos.ZERO, Direction.DOWN));
+            net.send(new ServerboundSetCarriedItemPacket(original));
+        } else {
+            client.gameMode.handleInventoryMouseClick(player.inventoryMenu.containerId, this.source, 40, ClickType.SWAP, (Player)player);
+        }
+        this.readyAtTick = this.tickNumber + Math.max(2, Math.min(30, (AutoSwap.latencyMs(client, player) + 49) / 50 + 2));
         this.stage = 2;
         this.pauseArmed = false;
-        this.pauseThroughTick = true;
+        this.pauseThroughTick = !viaHotbar;
         ModuleManager.actedThisTick = true;
     }
 
