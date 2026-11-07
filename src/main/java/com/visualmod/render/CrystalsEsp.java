@@ -1,5 +1,6 @@
 package com.visualmod.render;
 
+import com.visualmod.VisualModClient;
 import com.visualmod.gui.UiRenderer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.util.Mth;
@@ -24,6 +25,8 @@ public final class CrystalsEsp {
     private static final int COUNT = TIERS * PER_TIER;
     private static final float[] TIER_HEIGHT = {0.14f, 0.52f, 0.90f};
 
+    private static long lastLog;
+
     private CrystalsEsp() {
     }
 
@@ -31,6 +34,20 @@ public final class CrystalsEsp {
     private record Crystal(double dist, float cx, float cy, float glowR, List<Face> faces) {}
 
     public static void render(UiRenderer ui, LivingEntity entity, Vec3 base, float speed, float sizeMul, float glow,
+                              Vec3 camera, double pxPerUnit, int color, float alpha, float partialTick, boolean visible) {
+        try {
+            int[] stat = renderInner(ui, entity, base, speed, sizeMul, glow, camera, pxPerUnit, color, alpha, partialTick, visible);
+            long now = System.currentTimeMillis();
+            if (now - lastLog > 3000L) {
+                lastLog = now;
+                VisualModClient.LOGGER.info("CrystalsEsp: кристаллов {}, граней {}, alpha {}, size {}, color {}", stat[0], stat[1], alpha, sizeMul, Integer.toHexString(color));
+            }
+        } catch (Throwable t) {
+            VisualModClient.LOGGER.error("CrystalsEsp: ошибка отрисовки", t);
+        }
+    }
+
+    private static int[] renderInner(UiRenderer ui, LivingEntity entity, Vec3 base, float speed, float sizeMul, float glow,
                               Vec3 camera, double pxPerUnit, int color, float alpha, float partialTick, boolean visible) {
         Minecraft mc = Minecraft.getInstance();
         float eased = easeOutCubic(alpha);
@@ -101,6 +118,9 @@ public final class CrystalsEsp {
             }
         }
         ui.setOpacity(alpha);
+        int faceCount = 0;
+        for (Crystal cr : crystals) faceCount += cr.faces().size();
+        return new int[]{crystals.size(), faceCount};
     }
 
     private static void addFace(List<Face> out, Vec3 a, Vec3 b, Vec3 c, Vec3 center, Vec3 camera, Vec3 light) {
