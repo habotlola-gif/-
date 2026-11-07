@@ -80,6 +80,7 @@ public final class KillAura extends Module {
     private boolean active;
     /** известен ли поворот, который сервер получил в прошлом тике (aimYaw/aimPitch). */
     private boolean aimValid;
+    private float yawVel, pitchVel;           // угловая скорость поворота: разгон и торможение, как у руки
     private float prevAimYaw, prevAimPitch;   // поворот прошлого тика: для плавной отрисовки между тиками
     private float smPx, smPy;                  // сглаженная точка мультипоинта
     private Entity smTarget;
@@ -131,6 +132,8 @@ public final class KillAura extends Module {
         if (!this.aimValid) {
             this.aimYaw = this.camYaw;
             this.aimPitch = this.camPitch;
+            this.yawVel = 0.0f;
+            this.pitchVel = 0.0f;
             this.aimValid = true;
         }
 
@@ -150,9 +153,21 @@ public final class KillAura extends Module {
         float maxStep = rage ? 180.0f : ModuleManager.EXPERIMENTAL.speedDegPerSec() * 0.05f;
         float step = this.gcd.isOn() ? gcdStep(mc) : 0.0f;
 
-        float dYaw = Mth.clamp(Mth.wrapDegrees(wantYaw - this.aimYaw) * ease, -maxStep, maxStep);
-        float dPitch = this.pitch.isOn()
+        float wantYawVel = Mth.clamp(Mth.wrapDegrees(wantYaw - this.aimYaw) * ease, -maxStep, maxStep);
+        float wantPitchVel = this.pitch.isOn()
                 ? Mth.clamp((wantPitch - this.aimPitch) * ease, -maxStep, maxStep) : 0.0f;
+        if (rage) {
+            this.yawVel = wantYawVel;
+            this.pitchVel = wantPitchVel;
+        } else {
+            // «Плавность»: скорость поворота не прыгает мгновенно, а разгоняется и тормозит. Чем выше плавность,
+            // тем больше инерция. Вертикаль чуть ленивее горизонтали: так двигается рука.
+            float inertia = 1.0f / (1.0f + this.smoothness.getFloat() * 0.5f);
+            this.yawVel += (wantYawVel - this.yawVel) * inertia;
+            this.pitchVel += (wantPitchVel - this.pitchVel) * inertia * 0.8f;
+        }
+        float dYaw = this.yawVel;
+        float dPitch = this.pitchVel;
         this.aimYaw += snap(dYaw, step);
         this.aimPitch = Mth.clamp(this.aimPitch + snap(dPitch, step), -90.0f, 90.0f);
 
