@@ -275,6 +275,13 @@ public final class KillAura extends Module {
         float px, py;
         if (ex.multipointOn()) {
             double t = (player.tickCount + (e.getId() % 17) * 3) / 20.0 * ex.mpSpeedValue();
+            // «Рваная скорость»: точка то рывком проскакивает участок пути, то почти стоит (4 рывка за оборот).
+            float jerk = ex.mpJerkValue();
+            if (jerk > 0.0f) {
+                double sg = t * 4.0, n = Math.floor(sg), f = sg - n;
+                double stutter = (n + f * f * f * (f * (f * 6.0 - 15.0) + 10.0)) / 4.0;
+                t += jerk * (stutter - t);
+            }
             double phase = switch (ex.mpDirectionIndex()) {
                 case 1 -> 1.0 - (t - Math.floor(t));
                 case 2 -> { double f = t - Math.floor(t); yield f < 0.5 ? f * 2 : 2 - f * 2; }
