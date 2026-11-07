@@ -1,5 +1,6 @@
 package com.visualmod.module;
 
+import com.visualmod.setting.ModeSetting;
 import com.visualmod.setting.NumberSetting;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.phys.Vec3;
@@ -13,6 +14,7 @@ import net.minecraft.world.phys.Vec3;
  * начнётся только после приземления или после повторного включения. Чем дольше висишь, тем выше риск, что античит заметит паузу.
  */
 public final class AirStuck extends Module {
+    public final ModeSetting mode = this.setting(new ModeSetting("mode", "Режим", "С лимитом", "Без лимита"));
     public final NumberSetting limit = this.setting(new NumberSetting("seconds", "Время", 12.0, 0.5, 20.0, 0.5, " с"));
 
     private boolean frozen;     // сейчас висим: пакеты движения глушатся
@@ -23,7 +25,8 @@ public final class AirStuck extends Module {
     private double savedFall;
 
     public AirStuck() {
-        super("AirStuck", "Короткое зависание в воздухе (под Grim ограничено лимитом)", Category.MOVEMENT);
+        super("AirStuck", "Зависание в воздухе: с лимитом по времени или пока не выключишь", Category.MOVEMENT);
+        this.limit.visibleWhen(() -> this.mode.getIndex() == 0);
     }
 
     /** Нужно ли сейчас глушить пакеты движения (ClientCommonPacketListenerImplMixin). */
@@ -65,7 +68,7 @@ public final class AirStuck extends Module {
         player.zo = this.savedPos.z;
         player.setDeltaMovement(Vec3.ZERO);
         player.fallDistance = this.savedFall;
-        if (++this.stuckTicks >= Math.max(1, Math.round(this.limit.getFloat() * 20.0f))) {
+        if (this.mode.getIndex() == 0 && ++this.stuckTicks >= Math.max(1, Math.round(this.limit.getFloat() * 20.0f))) {
             player.setDeltaMovement(this.savedMotion);
             this.frozen = false;
             this.released = true;
