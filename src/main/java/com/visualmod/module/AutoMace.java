@@ -22,7 +22,9 @@ extends Module {
     public final BooleanSetting swordFallback = this.setting(new BooleanSetting("sword_fallback", "Меч без падения", true));
     public final BooleanSetting wind = this.setting(new BooleanSetting("wind", "Ветрозаряд-запуск", false));
     public final NumberSetting windRange = this.setting(new NumberSetting("wind_range", "Дальность запуска", 6.0, 3.0, 10.0, 0.5, " бл."));
-    private static final int RESTORE_DELAY_TICKS = 2;
+    public final NumberSetting restoreDelay = this.setting(new NumberSetting("restore_delay", "Возврат слота через", 2.5, 0.5, 5.0, 0.5, " с"));
+    private int pendingMaceSlot = -1;
+    private int pendingMaceIn;
     private int windCooldown;
     private boolean launched;
     private int previousSlot = -1;
@@ -67,7 +69,7 @@ extends Module {
             this.previousSlot = inventory.getSelectedSlot();
         }
         inventory.setSelectedSlot(slot);
-        this.restoreIn = RESTORE_DELAY_TICKS;
+        this.restoreIn = Math.max(1, Math.round(this.restoreDelay.getFloat() * 20.0f));
     }
 
     /**
@@ -77,6 +79,11 @@ extends Module {
      */
     public void beforePlayerTick(LocalPlayer player) {
         if (this.windCooldown > 0) --this.windCooldown;
+        // булава в руку не в тот же тик, что бросок: слишком быстрая смена слота выглядит как BadPackets
+        if (this.pendingMaceSlot >= 0 && --this.pendingMaceIn <= 0) {
+            player.getInventory().setSelectedSlot(this.pendingMaceSlot);
+            this.pendingMaceSlot = -1;
+        }
         if (player.onGround() || player.isInWater()) this.launched = false;
         Minecraft mc = Minecraft.getInstance();
         if (!this.isEnabled() || !this.wind.isOn() || this.launched || this.windCooldown > 0
@@ -103,7 +110,8 @@ extends Module {
         player.setXRot(pitch);
         player.yRotO = yawO;
         player.xRotO = pitchO;
-        inv.setSelectedSlot(maceSlot);               // сразу булава в руку для смэша
+        this.pendingMaceSlot = maceSlot;             // булава в руку через несколько тиков
+        this.pendingMaceIn = 4;
         this.previousSlot = -1;
         this.launched = true;
         this.windCooldown = 30;
