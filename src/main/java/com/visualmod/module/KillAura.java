@@ -302,8 +302,8 @@ public final class KillAura extends Module {
             };
             // чем быстрее двигаемся мы и цель, тем ближе к центру: меньше шанс уйти за край хитбокса
             double v = Math.hypot(vel.x, vel.z) + Math.hypot(player.getDeltaMovement().x, player.getDeltaMovement().z);
-            float shrink = 1.0f - 0.5f * (float) Mth.clamp((v - 0.10) / 0.30, 0.0, 1.0);
-            if (this.isRage()) shrink *= 0.6f;
+            float shrink = 1.0f - 0.3f * (float) Mth.clamp((v - 0.10) / 0.30, 0.0, 1.0);
+            if (this.isRage()) shrink *= 0.8f;
             float size = ex.mpSizeValue() * shrink;
             float[] mine = MultipointPath.sample(phase, ex.mpArcValue(), size);
             float[] pt = mine;
@@ -324,7 +324,10 @@ public final class KillAura extends Module {
         // В прыжке глаза выше и мы летим вверх: целимся чуть ниже груди, чтобы луч не уходил выше хитбокса.
         float up = (float) Mth.clamp(player.getDeltaMovement().y, 0.0, 0.5);
         this.jumpBlend += ((player.onGround() ? 0.0f : 1.0f) - this.jumpBlend) * 0.5f;
-        py = Mth.clamp(py - this.jumpBlend * (this.jumpAim.getFloat() / 100.0f + up * 0.2f), 0.15f, 1.0f);
+        // Сжимаем фигуру вниз пропорционально, а не сдвигаем целиком: иначе нижняя часть пути упирается в
+        // нижнюю границу и мультипоинт в прыжке «замирает» у ног.
+        float shift = this.jumpBlend * (this.jumpAim.getFloat() / 100.0f + up * 0.2f);
+        py = Mth.clamp(0.18f + (py - 0.18f) * (1.0f - shift / 0.57f), 0.12f, 1.0f);
 
         // Сглаживаем саму точку: углы фигур (зигзаг, ромб, звезда) иначе дёргают голову на каждом изломе.
         if (this.smTarget != e) {
