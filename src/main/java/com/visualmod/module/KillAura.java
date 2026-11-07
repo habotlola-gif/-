@@ -80,6 +80,9 @@ public final class KillAura extends Module {
     private boolean active;
     /** известен ли поворот, который сервер получил в прошлом тике (aimYaw/aimPitch). */
     private boolean aimValid;
+    private float prevAimYaw, prevAimPitch;   // поворот прошлого тика: для плавной отрисовки между тиками
+    private float smPx, smPy;                  // сглаженная точка мультипоинта
+    private Entity smTarget;
     private float aimYaw, aimPitch;   // silent-поворот (то, что видит сервер)
     private float camYaw, camPitch;   // реальная камера, сохраняется на время тика
     private float bobY, bobX;         // yBob/xBob до тика (качание рук считается от камеры, а не от silent-поворота)
@@ -130,6 +133,9 @@ public final class KillAura extends Module {
             this.aimPitch = this.camPitch;
             this.aimValid = true;
         }
+
+        this.prevAimYaw = this.aimYaw;
+        this.prevAimPitch = this.aimPitch;
 
         // Атака пойдёт в начале следующего тика, когда мы уже сдвинемся: целимся из ожидаемой позиции глаз,
         // иначе при движении (стрейф, бег) поворот считается из старой точки и удар уходит мимо.
@@ -238,12 +244,13 @@ public final class KillAura extends Module {
         return this.isEnabled() && this.aimValid && this.target != null;
     }
 
-    public float renderYaw() {
-        return this.aimYaw;
+    /** Поворот для модели между тиками (partialTick 0..1), чтобы голова плыла плавно, а не шагала 20 раз в секунду. */
+    public float renderYaw(float partialTick) {
+        return this.prevAimYaw + Mth.wrapDegrees(this.aimYaw - this.prevAimYaw) * partialTick;
     }
 
-    public float renderPitch() {
-        return this.aimPitch;
+    public float renderPitch(float partialTick) {
+        return this.prevAimPitch + (this.aimPitch - this.prevAimPitch) * partialTick;
     }
 
     public float yawDelta() {
@@ -318,6 +325,18 @@ public final class KillAura extends Module {
         float up = (float) Mth.clamp(player.getDeltaMovement().y, 0.0, 0.5);
         this.jumpBlend += ((player.onGround() ? 0.0f : 1.0f) - this.jumpBlend) * 0.5f;
         py = Mth.clamp(py - this.jumpBlend * (this.jumpAim.getFloat() / 100.0f + up * 0.2f), 0.15f, 1.0f);
+
+        // Сглаживаем саму точку: углы фигур (зигзаг, ромб, звезда) иначе дёргают голову на каждом изломе.
+        if (this.smTarget != e) {
+            this.smTarget = e;
+            this.smPx = px;
+            this.smPy = py;
+        }
+        float follow = ex.multipointOn() ? 0.45f : 1.0f;
+        this.smPx += (px - this.smPx) * follow;
+        this.smPy += (py - this.smPy) * follow;
+        px = this.smPx;
+        py = this.smPy;
 
         // «вправо» относительно взгляда на цель
         double dx = c.x - eye.x, dz = c.z - eye.z;

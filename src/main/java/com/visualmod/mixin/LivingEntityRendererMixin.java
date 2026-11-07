@@ -24,7 +24,7 @@ public abstract class LivingEntityRendererMixin {
         if (!(entity instanceof LocalPlayer)) return;
         KillAura aura = ModuleManager.KILL_AURA;
         if (!aura.hasSilentAim()) return;
-        state.xRot = aura.renderPitch();
-        state.yRot = Mth.wrapDegrees(aura.renderYaw() - state.bodyRot);
+        state.xRot = aura.renderPitch(partialTick);
+        state.yRot = Mth.wrapDegrees(aura.renderYaw(partialTick) - state.bodyRot);
     }
 }
