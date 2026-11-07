@@ -115,6 +115,12 @@ public final class CrystalsEsp {
                 float sh = (float) Math.pow(f.shade(), 1.4);
                 int face = UiRenderer.lerpColor(darkCol, lightCol, sh);
                 ui.triangle(a[0], a[1], b[0], b[1], c[0], c[1], 0xFF000000 | face & 0xFFFFFF);
+                // чёткий светлый контур грани (рисуется проверенной «капсулой», видно даже если заливка не отрисовалась)
+                int edge = 0xFF000000 | lightCol & 0xFFFFFF;
+                float th = Math.max(1.0f, 1.1f * (float) ui.guiScale());
+                ui.capsule(a[0], a[1], b[0], b[1], th, 0, edge);
+                ui.capsule(b[0], b[1], c[0], c[1], th, 0, edge);
+                ui.capsule(c[0], c[1], a[0], a[1], th, 0, edge);
             }
         }
         ui.setOpacity(alpha);
