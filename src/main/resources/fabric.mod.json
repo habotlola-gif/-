@@ -1,0 +1,20 @@
+{
+	"schemaVersion": 1,
+	"id": "visualmod",
+	"version": "1.0.0",
+	"name": "Visual Mod",
+	"description": "Чёрное GUI с модулями Fullbright, NoJumpDelay и FastExp.",
+	"authors": ["chikleon"],
+	"license": "MIT",
+	"environment": "client",
+	"entrypoints": {
+		"client": ["com.visualmod.VisualModClient"]
+	},
+	"mixins": ["visualmod.mixins.json"],
+	"depends": {
+		"fabricloader": ">=0.19.0",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}

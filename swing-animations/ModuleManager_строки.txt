@@ -1,0 +1,3 @@
+52:    public static final SwingAnimations SWING_ANIMATIONS = new SwingAnimations();
+67:    public static final List<Module> MODULES = List.of(FULLBRIGHT, SPRINT, NO_JUMP_DELAY, FAST_EXP, SHADER_HANDS, SHADER_ESP, NAME_TAGS, AUTO_MACE, REMOVALS, SWING_ANIMATIONS, VIEW_MODEL, AMBIENCE, TRIGGER_BOT, AIM_ASSIST, KILL_AURA, AUTO_SWAP, FT_HELPER, CLICK_ACTIONS, HUD, TARGET_ESP, ASPECT_RATIO, EXPERIMENTAL, DISCORD_RPC, PARTICLES);
+11:Визуал: ClickGUI, HUD, NameTags, TargetEsp, ShaderEsp, ShaderHands, Ambience, ViewModel, SwingAnimations, AspectRatio, Removals
