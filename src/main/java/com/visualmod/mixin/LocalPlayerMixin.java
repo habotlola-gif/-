@@ -19,12 +19,14 @@ public abstract class LocalPlayerMixin {
     private void visualmod$beforeClickActionsTick(CallbackInfo ci) {
         ModuleManager.CLICK_ACTIONS.beforePlayerTick((LocalPlayer)(Object)this);
         ModuleManager.AUTO_SWAP.beforePlayerTick((LocalPlayer)(Object)this);
+        ModuleManager.AIR_STUCK.beforePlayerTick((LocalPlayer)(Object)this);
     }
 
     @Inject(method={"tick"}, at={@At(value="TAIL")})
     private void visualmod$afterClickActionsTick(CallbackInfo ci) {
         ModuleManager.CLICK_ACTIONS.afterPlayerTick();
         ModuleManager.AUTO_SWAP.afterPlayerTick();
+        ModuleManager.AIR_STUCK.afterPlayerTick((LocalPlayer)(Object)this);
     }
 }
 
