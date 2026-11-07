@@ -297,7 +297,17 @@ public final class KillAura extends Module {
             double v = Math.hypot(vel.x, vel.z) + Math.hypot(player.getDeltaMovement().x, player.getDeltaMovement().z);
             float shrink = 1.0f - 0.5f * (float) Mth.clamp((v - 0.10) / 0.30, 0.0, 1.0);
             if (this.isRage()) shrink *= 0.6f;
-            float[] pt = MultipointPath.sample(phase, ex.mpArcValue(), ex.mpSizeValue() * shrink);
+            float size = ex.mpSizeValue() * shrink;
+            float[] mine = MultipointPath.sample(phase, ex.mpArcValue(), size);
+            float[] pt = mine;
+            int pattern = ex.mpPatternIndex();
+            if (pattern != 0) {
+                // готовые паттерны: «Мой путь» участвует только в режиме «По очереди»
+                float[] mineUnit = MultipointPath.sample(phase, ex.mpArcValue(), 1.0f);
+                pt = com.visualmod.multipoint.MultipointPatterns.sample(pattern, (long) Math.floor(t), (float) phase,
+                        ex.mpSwitchEvery(), size, e.getId(), mineUnit);
+                // MultipointPath возвращает значения в долях хитбокса (y 0..1), как и паттерны
+            }
             px = pt[0];
             py = pt[1];
         } else {

@@ -27,6 +27,8 @@ public final class Experimental extends Module {
     public final NumberSetting mpSpeed = this.setting(new NumberSetting("mp_speed", "Скорость обхода", DEFAULT_MP_SPEED, 0.1, 4.0, 0.1, " об/с"));
     public final NumberSetting mpArc = this.setting(new NumberSetting("mp_arc", "Дуга (сглаживание)", DEFAULT_MP_ARC, 0.0, 4.0, 1.0, ""));
     public final NumberSetting mpSize = this.setting(new NumberSetting("mp_size", "Размер пути", DEFAULT_MP_SIZE, 20.0, 100.0, 5.0, "%"));
+    public final ModeSetting mpPattern = this.setting(new ModeSetting("mp_pattern", "Паттерн", "Мой путь", "Круг", "Восьмёрка", "Зигзаг", "Ромб", "По очереди", "Случайный"));
+    public final NumberSetting mpSwitch = this.setting(new NumberSetting("mp_switch", "Смена каждые", 1.0, 1.0, 5.0, 1.0, " об."));
     public final NumberSetting mpJerk = this.setting(new NumberSetting("mp_jerk", "Рваная скорость", 0.0, 0.0, 100.0, 5.0, "%"));
     public final ModeSetting mpDirection = this.setting(new ModeSetting("mp_direction", "Направление", "Вперёд", "Назад", "Туда-обратно"));
     public final ButtonSetting mpOpen = this.setting(new ButtonSetting("mp_open", "Открыть расположение",
@@ -37,6 +39,8 @@ public final class Experimental extends Module {
         this.mpSpeed.visibleWhen(this.multipoint::isOn);
         this.mpArc.visibleWhen(this.multipoint::isOn);
         this.mpSize.visibleWhen(this.multipoint::isOn);
+        this.mpPattern.visibleWhen(this.multipoint::isOn);
+        this.mpSwitch.visibleWhen(() -> this.multipoint.isOn() && this.mpPattern.getIndex() == 5);
         this.mpJerk.visibleWhen(this.multipoint::isOn);
         this.mpDirection.visibleWhen(this.multipoint::isOn);
         this.mpOpen.visibleWhen(this.multipoint::isOn);
@@ -61,6 +65,15 @@ public final class Experimental extends Module {
 
     public int mpArcValue() {
         return this.isEnabled() ? this.mpArc.getInt() : DEFAULT_MP_ARC;
+    }
+
+    /** Паттерн: 0 мой путь, 1 круг, 2 восьмёрка, 3 зигзаг, 4 ромб, 5 по очереди, 6 случайный. */
+    public int mpPatternIndex() {
+        return this.isEnabled() ? this.mpPattern.getIndex() : 0;
+    }
+
+    public int mpSwitchEvery() {
+        return this.isEnabled() ? this.mpSwitch.getInt() : 1;
     }
 
     /** Рваность обхода 0..1: 0 равномерно, 1 рывок-пауза-рывок. */
