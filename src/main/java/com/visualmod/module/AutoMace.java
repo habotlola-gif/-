@@ -22,6 +22,7 @@ extends Module {
     public final BooleanSetting swordFallback = this.setting(new BooleanSetting("sword_fallback", "Меч без падения", true));
     public final BooleanSetting wind = this.setting(new BooleanSetting("wind", "Ветрозаряд-запуск", false));
     public final NumberSetting windRange = this.setting(new NumberSetting("wind_range", "Дальность запуска", 6.0, 3.0, 10.0, 0.5, " бл."));
+    public final BooleanSetting preSwap = this.setting(new BooleanSetting("pre_swap", "Свап заранее", true));
     public final NumberSetting restoreDelay = this.setting(new NumberSetting("restore_delay", "Возврат слота через", 2.5, 0.5, 5.0, 0.5, " с"));
     private int pendingMaceSlot = -1;
     private int pendingMaceIn;
@@ -86,6 +87,7 @@ extends Module {
         }
         if (player.onGround() || player.isInWater()) this.launched = false;
         Minecraft mc = Minecraft.getInstance();
+        this.preSwap(player);
         if (!this.isEnabled() || !this.wind.isOn() || this.launched || this.windCooldown > 0
                 || player.onGround() || player.isFallFlying() || player.isPassenger()
                 || mc.gameMode == null || mc.level == null || mc.screen != null
@@ -115,6 +117,36 @@ extends Module {
         this.previousSlot = -1;
         this.launched = true;
         this.windCooldown = 30;
+    }
+
+    /** Падаем и цель вот-вот в зоне удара: берём булаву за 1-2 тика до удара, а не в момент самого удара. */
+    private void preSwap(LocalPlayer player) {
+        Minecraft mc = Minecraft.getInstance();
+        if (!this.isEnabled() || !this.preSwap.isOn() || mc.level == null || mc.screen != null
+                || player.onGround() || player.isFallFlying() || player.fallDistance < this.minFall.get()) {
+            return;
+        }
+        Inventory inv = player.getInventory();
+        if (inv.getSelectedItem().is(Items.MACE)) return;
+        Entity t = ModuleManager.KILL_AURA.currentTarget();
+        boolean near;
+        if (t != null) {
+            near = player.distanceTo(t) <= ModuleManager.KILL_AURA.range.get() + 1.5;
+        } else {
+            near = false;
+            for (Player other : mc.level.players()) {
+                if (other == player || other.isSpectator() || !other.isAlive()
+                        || FriendManager.isFriend(other.getGameProfile().name())) continue;
+                if (player.distanceTo(other) <= 4.5) { near = true; break; }
+            }
+        }
+        if (!near) return;
+        for (int slot = 0; slot < 9; ++slot) {
+            if (inv.getItem(slot).is(Items.MACE)) {
+                this.swapTo(inv, slot);
+                return;
+            }
+        }
     }
 
     private boolean hasTarget(Minecraft mc, LocalPlayer self) {

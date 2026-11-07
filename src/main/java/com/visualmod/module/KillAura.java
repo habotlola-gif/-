@@ -51,6 +51,7 @@ public final class KillAura extends Module {
     public final NumberSetting jumpAim = this.setting(new NumberSetting("jump_aim", "Ниже в прыжке", 15.0, 0.0, 35.0, 1.0, "%"));
     public final BooleanSetting moveFix = this.setting(new BooleanSetting("move_fix", "Коррекция движения", true));
     /** Grim: плавная ротация с зоной захвата. Rage Grim: мгновенный поворот на ближайшего, 360°. */
+    public final ModeSetting sort = this.setting(new ModeSetting("sort", "Сортировка целей", "Авто", "Дистанция", "Здоровье", "Броня"));
     public final ModeSetting rotation = this.setting(new ModeSetting("rotation_mode", "Ротация", "Grim", "Rage Grim"));
     /** Выкл: бьёт сразу. Ждать падения: ждёт крит до 7 тиков, потом бьёт в любом случае. Только криты: без крита не бьёт. */
     public final ModeSetting critMode = this.setting(new ModeSetting("crit_mode", "Криты", "Выкл", "Ждать падения", "Только криты"));
@@ -227,6 +228,11 @@ public final class KillAura extends Module {
     }
 
     /** Разница «камера − silent» в градусах: на сколько повёрнут ввод относительно взгляда камеры. */
+    /** Текущая цель KillAura (для AutoMace: поменять слот заранее). */
+    public Entity currentTarget() {
+        return this.isEnabled() ? this.target : null;
+    }
+
     /** Есть ли сейчас silent-поворот (цель захвачена): им рисуем модель в третьем лице. */
     public boolean hasSilentAim() {
         return this.isEnabled() && this.aimValid && this.target != null;
@@ -385,7 +391,7 @@ public final class KillAura extends Module {
             Vec3 dir = box.getCenter().subtract(eye);
             double angle = Math.toDegrees(Math.acos(Mth.clamp(look.dot(dir.normalize()), -1.0, 1.0)));
             if (angle > maxAngle || !player.hasLineOfSight(e)) continue;
-            double score = rage ? dist : angle + dist * 6.0;
+            double score = this.score(e, dist, angle, rage);
             if (score < bestScore) { bestScore = score; best = e; }
         }
 
@@ -395,19 +401,37 @@ public final class KillAura extends Module {
             double dist = eye.distanceTo(nearestPoint(eye, locked.getBoundingBox()));
             if (dist <= RELEASE_RANGE) {
                 boolean inReach = dist <= reach;
+                int sortIndex = this.sort.getIndex();
                 // другую цель берём, если текущая вне досягаемости, либо новая заметно лучше
                 if (best == null || best == locked) {
                     best = locked;
-                } else if (inReach && !rage) {
+                } else if (inReach && (sortIndex != 0 || !rage)) {
                     Vec3 dir = locked.getBoundingBox().getCenter().subtract(eye);
                     double angle = Math.toDegrees(Math.acos(Mth.clamp(look.dot(dir.normalize()), -1.0, 1.0)));
-                    double lockedScore = angle + dist * 6.0;
-                    if (bestScore > lockedScore * 0.7 - 5.0) best = locked;
+                    double lockedScore = this.score(locked, dist, angle, rage);
+                    if (sortIndex == 0) {
+                        if (bestScore > lockedScore * 0.7 - 5.0) best = locked;
+                    } else {
+                        // небольшой запас, чтобы цель не прыгала туда-сюда при почти равных значениях
+                        double margin = sortIndex == 1 ? 0.5 : sortIndex == 2 ? 2.0 : 1.0;
+                        if (bestScore > lockedScore - margin) best = locked;
+                    }
                 }
             }
         }
         this.lockedTarget = best;
         return best;
+    }
+
+    /** Чем меньше, тем раньше бьём. Режим сортировки выбирается в настройках. */
+    private double score(Entity e, double dist, double angle, boolean rage) {
+        LivingEntity living = e instanceof LivingEntity l ? l : null;
+        return switch (this.sort.getIndex()) {
+            case 1 -> dist;
+            case 2 -> (living != null ? living.getHealth() + living.getAbsorptionAmount() : 0.0) + dist * 0.01;
+            case 3 -> (living != null ? living.getArmorValue() : 0.0) + dist * 0.01;
+            default -> rage ? dist : angle + dist * 6.0;
+        };
     }
 
     private boolean isValidTarget(LocalPlayer player, Entity entity) {
