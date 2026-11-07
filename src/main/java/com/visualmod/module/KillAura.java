@@ -48,6 +48,7 @@ public final class KillAura extends Module {
     public final NumberSetting smoothness = this.setting(new NumberSetting("smoothness", "Плавность", 2.0, 1.0, 10.0, 1.0, ""));
     public final BooleanSetting pitch = this.setting(new BooleanSetting("pitch", "По вертикали", true));
     public final BooleanSetting gcd = this.setting(new BooleanSetting("gcd", "Сетка чувствительности", true));
+    public final NumberSetting jumpAim = this.setting(new NumberSetting("jump_aim", "Ниже в прыжке", 15.0, 0.0, 35.0, 1.0, "%"));
     public final BooleanSetting moveFix = this.setting(new BooleanSetting("move_fix", "Коррекция движения", true));
     /** Grim: плавная ротация с зоной захвата. Rage Grim: мгновенный поворот на ближайшего, 360°. */
     public final ModeSetting rotation = this.setting(new ModeSetting("rotation_mode", "Ротация", "Grim", "Rage Grim"));
@@ -82,6 +83,7 @@ public final class KillAura extends Module {
     private float camYaw, camPitch;   // реальная камера, сохраняется на время тика
     private float bobY, bobX;         // yBob/xBob до тика (качание рук считается от камеры, а не от silent-поворота)
     private int critWait;
+    private float jumpBlend;          // 0 на земле, 1 в прыжке: плавно опускаем точку прицеливания
 
     public KillAura() {
         super("KillAura", "Silent-наведение и удар по цели", Category.COMBAT);
@@ -276,6 +278,10 @@ public final class KillAura extends Module {
             px = 0.0f;
             py = 0.75f;
         }
+        // В прыжке глаза выше и мы летим вверх: целимся чуть ниже груди, чтобы луч не уходил выше хитбокса.
+        float up = (float) Mth.clamp(player.getDeltaMovement().y, 0.0, 0.5);
+        this.jumpBlend += ((player.onGround() ? 0.0f : 1.0f) - this.jumpBlend) * 0.5f;
+        py = Mth.clamp(py - this.jumpBlend * (this.jumpAim.getFloat() / 100.0f + up * 0.2f), 0.15f, 1.0f);
 
         // «вправо» относительно взгляда на цель
         double dx = c.x - eye.x, dz = c.z - eye.z;
