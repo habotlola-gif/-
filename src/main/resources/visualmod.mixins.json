@@ -18,6 +18,7 @@
 		"LightTextureMixin",
 		"LivingEntityAccessor",
 		"LivingEntityMixin",
+		"LivingEntityRendererMixin",
 		"LocalPlayerMixin",
 		"LocalPlayerSilentMixin",
 		"MinecraftAccessor",

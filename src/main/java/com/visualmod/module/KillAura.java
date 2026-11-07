@@ -227,6 +227,19 @@ public final class KillAura extends Module {
     }
 
     /** Разница «камера − silent» в градусах: на сколько повёрнут ввод относительно взгляда камеры. */
+    /** Есть ли сейчас silent-поворот (цель захвачена): им рисуем модель в третьем лице. */
+    public boolean hasSilentAim() {
+        return this.isEnabled() && this.aimValid && this.target != null;
+    }
+
+    public float renderYaw() {
+        return this.aimYaw;
+    }
+
+    public float renderPitch() {
+        return this.aimPitch;
+    }
+
     public float yawDelta() {
         return this.camYaw - this.aimYaw;
     }
