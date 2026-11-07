@@ -20,6 +20,7 @@ public abstract class LocalPlayerMixin {
         ModuleManager.CLICK_ACTIONS.beforePlayerTick((LocalPlayer)(Object)this);
         ModuleManager.AUTO_SWAP.beforePlayerTick((LocalPlayer)(Object)this);
         ModuleManager.AIR_STUCK.beforePlayerTick((LocalPlayer)(Object)this);
+        ModuleManager.AUTO_MACE.beforePlayerTick((LocalPlayer)(Object)this);
     }
 
     @Inject(method={"tick"}, at={@At(value="TAIL")})
