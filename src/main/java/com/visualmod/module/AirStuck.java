@@ -8,12 +8,12 @@ import net.minecraft.world.phys.Vec3;
  * AirStuck под Grim: «висение» в воздухе на несколько тиков.
  *
  * Пока модуль включён и ты в воздухе, игрок замирает на месте, а пакеты движения не отправляются.
- * Через «Лимит» тиков висение само отпускает: возвращается движение, с которым ты начал висеть, так что
+ * Через «Время» секунд висение само отпускает: возвращается движение, с которым ты начал висеть, так что
  * на сервере следующий пакет продолжает предсказанную траекторию (иначе Grim откатит). Повторное висение
- * начнётся только после приземления или после повторного включения. Долго держать нельзя: сервер увидит лаг.
+ * начнётся только после приземления или после повторного включения. Чем дольше висишь, тем выше риск, что античит заметит паузу.
  */
 public final class AirStuck extends Module {
-    public final NumberSetting limit = this.setting(new NumberSetting("limit", "Лимит", 4.0, 1.0, 10.0, 1.0, " т."));
+    public final NumberSetting limit = this.setting(new NumberSetting("seconds", "Время", 12.0, 0.5, 20.0, 0.5, " с"));
 
     private boolean frozen;     // сейчас висим: пакеты движения глушатся
     private boolean released;   // лимит выбран, ждём приземления
@@ -43,6 +43,9 @@ public final class AirStuck extends Module {
             return;
         }
         if (this.released) return;
+        // Начинаем висеть только на падении: сервер считает «парение» по последнему пакету движения, и если
+        // он был движением вверх, через 4 секунды без пакетов (80 тиков) кикнет за полёт.
+        if (!this.frozen && player.getDeltaMovement().y > -0.05) return;
         if (!this.frozen) {
             this.frozen = true;
             this.savedPos = player.position();
@@ -62,7 +65,7 @@ public final class AirStuck extends Module {
         player.zo = this.savedPos.z;
         player.setDeltaMovement(Vec3.ZERO);
         player.fallDistance = this.savedFall;
-        if (++this.stuckTicks >= Math.max(1, this.limit.getInt())) {
+        if (++this.stuckTicks >= Math.max(1, Math.round(this.limit.getFloat() * 20.0f))) {
             player.setDeltaMovement(this.savedMotion);
             this.frozen = false;
             this.released = true;
