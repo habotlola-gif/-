@@ -15,6 +15,7 @@ import net.minecraft.world.phys.Vec3;
  */
 public final class AirStuck extends Module {
     public final ModeSetting mode = this.setting(new ModeSetting("mode", "Режим", "С лимитом", "Без лимита"));
+    public final ModeSetting exit = this.setting(new ModeSetting("exit", "После выхода", "Продолжить падение", "С нуля (как в KM)"));
     public final NumberSetting limit = this.setting(new NumberSetting("seconds", "Время", 12.0, 0.5, 20.0, 0.5, " с"));
 
     private boolean frozen;     // сейчас висим: пакеты движения глушатся
@@ -69,7 +70,7 @@ public final class AirStuck extends Module {
         player.setDeltaMovement(Vec3.ZERO);
         player.fallDistance = this.savedFall;
         if (this.mode.getIndex() == 0 && ++this.stuckTicks >= Math.max(1, Math.round(this.limit.getFloat() * 20.0f))) {
-            player.setDeltaMovement(this.savedMotion);
+            player.setDeltaMovement(this.exit.getIndex() == 0 ? this.savedMotion : Vec3.ZERO);
             this.frozen = false;
             this.released = true;
         }
@@ -77,7 +78,7 @@ public final class AirStuck extends Module {
 
     private void finish(LocalPlayer player) {
         if (this.frozen) {
-            player.setDeltaMovement(this.savedMotion);
+            player.setDeltaMovement(this.exit.getIndex() == 0 ? this.savedMotion : Vec3.ZERO);
         }
         this.frozen = false;
         this.released = false;
