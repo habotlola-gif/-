@@ -27,3 +27,11 @@
 - Игра использует ECS-системы (напр. `SprintTriggerSystem::doIntentTick`), строки с их сигнатурами есть в файле.
 - `MCPE_SO=libminecraftpe.so python3 tools/analyze.py <адрес слота vtable>` — для каждой виртуальной функции печатает размер и строки, на которые она ссылается. Строки-assert'ы содержат имена методов Mojang (напр. `LocalPlayer::changeDimension`), так что часть индексов можно подписать.
 - Подписано в vtable `LocalPlayer` (индексы относительно первой виртуальной функции): 88/89 `changeDimension`, 135 `readAdditionalSaveData`, 192 `openBook`, 216 `addExperience`, 217 `addLevels`. Тик пока не найден — похоже, значительная часть логики (спринт и др.) перенесена в ECS-системы.
+
+### Спринт (сборка из файла пользователя, ECS-системы)
+Нашёл через RTTI-имена адаптеров `StrictTickingSystemFunctionAdapter<...>` их vtable (функции запуска систем):
+- `SprintTimerSystemImpl::tick` — обёртка `0xe2dce1c`, внутренняя функция `0xe2dd040`.
+- `SprintTriggerSystem::doSetRequestTick` — обёртка `0xe2ddfb4`.
+- `SprintTriggerSystem::doIntentTick` — обёртка `0xe2df36c`; крупная функция `0xe2dfb34` (336 инструкций) — кандидат на саму логику.
+Адреса действительны только для этой сборки. Данные ECS-компонентов (PlayerInputRequestComponent и др.) — отдельная работа по раскладке структур.
+Запасной путь для AutoSprint: игровая опция `SPRINT_ON_MOVEMENT` (строка есть в файле).
