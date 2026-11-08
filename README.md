@@ -25,3 +25,5 @@
 - В файле нет имён функций Mojang, но остались RTTI-имена классов. `tools/vtables.py <so> LocalPlayer Player Actor` находит таблицы виртуальных функций по RTTI.
 - Для проверенной сборки: у `LocalPlayer` 247 виртуальных функций, у `Player` 181, у `Actor` 137.
 - Игра использует ECS-системы (напр. `SprintTriggerSystem::doIntentTick`), строки с их сигнатурами есть в файле.
+- `MCPE_SO=libminecraftpe.so python3 tools/analyze.py <адрес слота vtable>` — для каждой виртуальной функции печатает размер и строки, на которые она ссылается. Строки-assert'ы содержат имена методов Mojang (напр. `LocalPlayer::changeDimension`), так что часть индексов можно подписать.
+- Подписано в vtable `LocalPlayer` (индексы относительно первой виртуальной функции): 88/89 `changeDimension`, 135 `readAdditionalSaveData`, 192 `openBook`, 216 `addExperience`, 217 `addLevels`. Тик пока не найден — похоже, значительная часть логики (спринт и др.) перенесена в ECS-системы.
