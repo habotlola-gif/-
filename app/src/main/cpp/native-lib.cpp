@@ -1,4 +1,9 @@
 #include "module.h"
+#include "hook.h"
+#include "memory.h"
+#include "sigscan.h"
+#include <chrono>
+#include <thread>
 #include <android/log.h>
 #include <fstream>
 #include <sstream>
@@ -41,6 +46,34 @@ class AutoTotem : public Module {
 public: AutoTotem() : Module("autototem") { settings = {{"health", 6.f}}; }
 };
 
+// Сигнатуры игровых функций. Заполняются после анализа libminecraftpe.so конкретной версии (26.60.24).
+// Пустая строка = функция ещё не найдена, модуль, который от неё зависит, не включается.
+namespace sigs {
+    static const char* PLAYER_TICK = "";
+}
+
+static void* findInGame(const char* pattern) {
+    if (!pattern || !*pattern) return nullptr;
+    for (auto& r : mem::moduleRegions("libminecraftpe.so")) {
+        if (!r.exec) continue;
+        long off = sig::findUnique((const uint8_t*)r.start, r.end - r.start, pattern);
+        if (off >= 0) return (void*)(r.start + off);
+    }
+    return nullptr;
+}
+
+static void setup() {
+    // ждём, пока игра загрузит свою библиотеку
+    for (int i = 0; i < 600 && !mem::moduleBase("libminecraftpe.so"); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    if (!mem::moduleBase("libminecraftpe.so")) { LOG("libminecraftpe.so не найдена"); return; }
+    LOG("libminecraftpe.so at %p", (void*)mem::moduleBase("libminecraftpe.so"));
+
+    void* playerTick = findInGame(sigs::PLAYER_TICK);
+    LOG("PLAYER_TICK: %s", playerTick ? "найден" : "сигнатура не задана/не найдена");
+    // TODO: hook::install(playerTick, (void*)&hookedPlayerTick) -> в нём ModuleManager::get().tick()
+}
+
 // Точка входа: вызывается при загрузке библиотеки в процесс игры.
 __attribute__((constructor)) static void init() {
     auto& mm = ModuleManager::get();
@@ -50,8 +83,7 @@ __attribute__((constructor)) static void init() {
     mm.add(std::make_unique<Criticals>());
     mm.add(std::make_unique<AutoSprint>());
     mm.add(std::make_unique<AutoTotem>());
-    // Путь к конфигу в итоговой версии определяется при инъекции.
     mm.loadConfig("/sdcard/Android/data/com.hvh.client/files/hvh.cfg");
     LOG("HvhClient loaded");
-    // TODO: хукнуть игровой тик (напр. Level::tick / LocalPlayer::normalTick) и вызвать mm.tick()
+    std::thread(setup).detach();  // не блокируем загрузку игры
 }
