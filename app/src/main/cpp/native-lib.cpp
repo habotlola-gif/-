@@ -1,6 +1,7 @@
 #include "module.h"
 #include "hook.h"
 #include "memory.h"
+#include "options.h"
 #include "sigscan.h"
 #include <chrono>
 #include <thread>
@@ -41,7 +42,17 @@ class Velocity : public Module {
 public: Velocity() : Module("velocity") { settings = {{"horizontal", 100.f}, {"vertical", 100.f}}; }
 };
 class Criticals : public Module { public: Criticals() : Module("criticals") {} };
-class AutoSprint : public Module { public: AutoSprint() : Module("sprint") {} };
+// AutoSprint: включает штатную настройку игры "ctrl_sprintonmovement" в options.txt.
+// Игра читает её при старте, поэтому изменение вступает в силу при следующем запуске.
+class AutoSprint : public Module {
+public:
+    AutoSprint() : Module("sprint") {}
+    void onLoad() override {
+        const char* path = "/storage/emulated/0/Android/data/com.mojang.minecraftpe/files/games/com.mojang/minecraftpe/options.txt";
+        bool ok = options::set(path, "ctrl_sprintonmovement", "1");
+        LOG("AutoSprint: options.txt %s", ok ? "обновлён" : "без изменений/не записан");
+    }
+};
 class AutoTotem : public Module {
 public: AutoTotem() : Module("autototem") { settings = {{"health", 6.f}}; }
 };
@@ -83,7 +94,10 @@ __attribute__((constructor)) static void init() {
     mm.add(std::make_unique<Criticals>());
     mm.add(std::make_unique<AutoSprint>());
     mm.add(std::make_unique<AutoTotem>());
+    // Конфиг ищем в нескольких местах: каталог игры (доступен самой игре) и каталог лаунчера.
     mm.loadConfig("/sdcard/Android/data/com.hvh.client/files/hvh.cfg");
+    mm.loadConfig("/storage/emulated/0/Android/data/com.mojang.minecraftpe/files/hvh.cfg");
+    mm.load();
     LOG("HvhClient loaded");
     std::thread(setup).detach();  // не блокируем загрузку игры
 }
