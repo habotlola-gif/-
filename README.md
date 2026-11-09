@@ -42,3 +42,9 @@
 - Игра читает настройку при старте, поэтому эффект виден после перезапуска игры.
 - Формат `options.txt` (`ключ:значение`) и путь к нему взяты по памяти, на устройстве не проверялись.
 - Конфиг лаунчера (`hvh.cfg`) лежит в каталоге `com.hvh.client`; на Android 11+ процесс игры его читать не сможет. Нужен другой способ передачи настроек (напр. хранить конфиг в каталоге игры или встроить в патченый APK).
+
+### Swing Animations и Trail (ресурспаки, без внедрения в код)
+`python3 tools/build_packs.py dist` скачивает официальные файлы Mojang (Mojang/bedrock-samples) и собирает `.mcpack`:
+- `HvhSwing_Smooth` / `HvhSwing_Slash` / `HvhSwing_Big` — три стиля взмаха в первом лице (подмена времени `variable.attack_time` в `animation.player.first_person.attack_rotation(_item)`).
+- `HvhTrail` — радужный след: частица `hvh:trail`, анимация `animation.hvh.trail`, подключена в `player.entity.json` при `query.ground_speed > 0.5`.
+В самой игре не проверялось. Файлы Mojang в репозиторий не кладём.
