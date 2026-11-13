@@ -1,0 +1,9 @@
+{
+  "destination": { "host": "play.example.com", "port": 19132 },
+  "listen": { "host": "0.0.0.0", "port": 19133 },
+  "version": "1.26.60",
+  "offline": false,
+  "modules": {
+    "velocity": { "enabled": true, "horizontal": 40, "vertical": 100 }
+  }
+}

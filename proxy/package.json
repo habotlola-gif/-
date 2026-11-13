@@ -1,0 +1,9 @@
+{
+  "name": "hvh-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Прокси-ретранслятор для Minecraft Bedrock с боевыми модулями для HvH",
+  "main": "relay.js",
+  "scripts": { "start": "node relay.js", "test": "node test/velocity.test.js && node test/loopback.js" },
+  "dependencies": { "bedrock-protocol": "latest" }
+}

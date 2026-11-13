@@ -48,3 +48,10 @@
 - `HvhSwing_Smooth` / `HvhSwing_Slash` / `HvhSwing_Big` — три стиля взмаха в первом лице (подмена времени `variable.attack_time` в `animation.player.first_person.attack_rotation(_item)`).
 - `HvhTrail` — радужный след: частица `hvh:trail`, анимация `animation.hvh.trail`, подключена в `player.entity.json` при `query.ground_speed > 0.5`.
 В самой игре не проверялось. Файлы Mojang в репозиторий не кладём.
+
+## Прокси (proxy/) — боевые модули без патча игры
+Ретранслятор Minecraft Bedrock на Node.js + `bedrock-protocol` (поддерживает 1.26.60). Игра подключается к прокси, прокси к серверу, модули меняют пакеты по пути.
+- Запуск: `cd proxy && npm install --ignore-scripts && node relay.js --host <сервер> --port 19132`; в игре добавить сервер `127.0.0.1:19133`.
+- Первый вход: прокси выдаст код Microsoft (используй отдельный аккаунт). Токены кэшируются в `proxy/.auth/`.
+- Модули: `proxy/modules/` (сейчас `velocity` — ослабление отдачи). Настройки в `proxy/config.json`.
+- Тесты: `npm test` (модуль + сквозная проверка клиент→прокси→сервер на localhost). С реальным сервером и Microsoft-входом не проверялось.
