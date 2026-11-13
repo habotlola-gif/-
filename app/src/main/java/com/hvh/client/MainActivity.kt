@@ -1,5 +1,6 @@
 package com.hvh.client
 
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
@@ -7,6 +8,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.util.TypedValue
+import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -19,6 +21,9 @@ import kotlin.math.roundToInt
 /** Лаунчер: список модулей с переключателями и настройками + запуск Minecraft PE. */
 class MainActivity : AppCompatActivity() {
     private val mcpe = "com.mojang.minecraftpe"
+    private lateinit var servers: ServerStore
+    private lateinit var serverBox: LinearLayout
+    private lateinit var proxyStatus: TextView
 
     // Палитра (та же, что в макете)
     private val bg = Color.parseColor("#12151C")
@@ -47,6 +52,7 @@ class MainActivity : AppCompatActivity() {
         window.statusBarColor = panel
         window.navigationBarColor = bg
         val cfg = Config(this).also { it.export() }
+        servers = ServerStore(this)
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
 
@@ -69,6 +75,7 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { launchGame() }
         }, LinearLayout.LayoutParams(MATCH_PARENT, dp(54)).apply { setMargins(dp(16), dp(16), dp(16), dp(12)) })
 
+        list.addView(serverSection())
         for (m in Modules.all) list.addView(moduleView(cfg, m))
 
         list.addView(text("Настройки применяются при следующем запуске игры.", 12f, dim).apply {
@@ -76,6 +83,93 @@ class MainActivity : AppCompatActivity() {
         })
         root.addView(ScrollView(this).apply { addView(list) }, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         setContentView(root)
+    }
+
+    // ---- Серверы и прокси ----
+    private fun serverSection(): View {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        box.addView(View(this).apply { setBackgroundColor(line) }, LinearLayout.LayoutParams(MATCH_PARENT, dp(2)))
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(12), dp(16), dp(12)) }
+        body.addView(text("СЕРВЕРЫ", 14f, fg, true))
+        body.addView(text("Нажми, чтобы выбрать. Долгое нажатие: изменить или удалить.", 12f, dim))
+        serverBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(serverBox)
+        body.addView(Button(this).apply {
+            text = "+ ДОБАВИТЬ СЕРВЕР"; typeface = mono; isAllCaps = false; setTextColor(accent)
+            background = square(panel2, accent, 2)
+            setOnClickListener { editServer(-1) }
+        }, LinearLayout.LayoutParams(MATCH_PARENT, dp(44)).apply { topMargin = dp(8) })
+        body.addView(Button(this).apply {
+            text = "ЗАПУСТИТЬ ПРОКСИ"; typeface = mono; isAllCaps = false; setTextColor(accentInk)
+            background = square(accent, Color.parseColor("#3FBF5C"), 2)
+            setOnClickListener { toggleProxy(this) }
+        }, LinearLayout.LayoutParams(MATCH_PARENT, dp(44)).apply { topMargin = dp(8) })
+        proxyStatus = text("В игре добавь сервер 127.0.0.1, порт ${ProxyController.LISTEN_PORT}", 12f, dim).apply { setPadding(0, dp(8), 0, 0) }
+        body.addView(proxyStatus)
+        box.addView(body)
+        renderServers()
+        return box
+    }
+
+    private fun renderServers() {
+        serverBox.removeAllViews()
+        val list = servers.all()
+        if (list.isEmpty()) {
+            serverBox.addView(text("Серверов нет. Добавь первый.", 13f, dim).apply { setPadding(0, dp(10), 0, dp(4)) })
+            return
+        }
+        list.forEachIndexed { i, s ->
+            val sel = i == servers.selected
+            serverBox.addView(text((if (sel) "▶ " else "   ") + s.name + "  " + s.address, 14f, if (sel) accentInk else fg, sel).apply {
+                background = square(if (sel) accent else panel, line, 1)
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                setOnClickListener { servers.selected = i; renderServers() }
+                setOnLongClickListener { serverMenu(i); true }
+            }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(6) })
+        }
+    }
+
+    private fun serverMenu(i: Int) {
+        AlertDialog.Builder(this).setItems(arrayOf("Изменить", "Удалить")) { _, which ->
+            if (which == 0) editServer(i) else { servers.remove(i); renderServers() }
+        }.show()
+    }
+
+    private fun editServer(index: Int) {
+        val old = servers.all().getOrNull(index)
+        fun field(hint: String, value: String, type: Int) = EditText(this).apply {
+            this.hint = hint; setText(value); inputType = type; setSingleLine()
+        }
+        val name = field("Название", old?.name ?: "", InputType.TYPE_CLASS_TEXT)
+        val host = field("IP или адрес", old?.host ?: "", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI)
+        val port = field("Порт", (old?.port ?: 19132).toString(), InputType.TYPE_CLASS_NUMBER)
+        val form = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0)
+            addView(name); addView(host); addView(port)
+        }
+        val dlg = AlertDialog.Builder(this)
+            .setTitle(if (old == null) "Новый сервер" else "Изменить сервер")
+            .setView(form).setNegativeButton("Отмена", null).setPositiveButton("Сохранить", null).create()
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val err = ServerStore.validate(name.text.toString(), host.text.toString(), port.text.toString())
+                if (err != null) { Toast.makeText(this, err, Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+                val s = Server(name.text.toString().trim(), host.text.toString().trim(), port.text.toString().toInt())
+                if (old == null) servers.add(s) else servers.update(index, s)
+                renderServers(); dlg.dismiss()
+            }
+        }
+        dlg.show()
+    }
+
+    private fun toggleProxy(btn: Button) {
+        if (ProxyController.running) { ProxyController.stop(); btn.text = "ЗАПУСТИТЬ ПРОКСИ"; return }
+        val s = servers.current()
+        if (s == null) { Toast.makeText(this, "Сначала добавь сервер", Toast.LENGTH_SHORT).show(); return }
+        when (val r = ProxyController.start(s)) {
+            is ProxyController.Result.Started -> { btn.text = "ОСТАНОВИТЬ ПРОКСИ"; proxyStatus.text = r.info }
+            is ProxyController.Result.Failed -> proxyStatus.text = r.reason
+        }
     }
 
     private fun moduleView(cfg: Config, m: ModuleDef): View {
