@@ -25,7 +25,7 @@ from aiogram.types import (
 )
 from aiogram.utils.chat_action import ChatActionSender
 
-from .analyzer import Analyzer, AnalyzerError
+from .analyzer import Analyzer, AnalyzerError, select_posts
 from .collector import Collector, channel_ref, parse_channel_ref
 from .config import Config, load_config
 from .formatting import format_digest, hours_label
@@ -166,13 +166,14 @@ class App:
                 self.store.set_last_run(started)
             return
 
+        selection = select_posts(collected.posts, cfg.max_input_chars, cfg.max_post_chars)
         await status.edit_text(
-            f"🧠 Выбираю интересное из {len(collected.posts)} постов "
-            f"({collected.channels_read} каналов)… Обычно это занимает до минуты."
+            f"🧠 Выбираю интересное из {len(selection.posts)} постов "
+            f"({collected.channels_read} каналов)… Бесплатной модели может понадобиться пара минут."
         )
         try:
             async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-                digest = await self.analyzer.analyze(collected.posts, state.interests)
+                analysis = await self.analyzer.analyze(selection.posts, state.interests)
         except AnalyzerError as e:
             await status.edit_text(f"😕 {escape(str(e))}")
             return
@@ -181,11 +182,12 @@ class App:
             await status.edit_text("😕 Что-то пошло не так при анализе — подробности в логе бота")
             return
 
-        header = (
-            f"🔥 <b>Интересное {period}</b>\n"
-            f"<i>Просмотрено {len(collected.posts)} постов из {collected.channels_read} каналов</i>"
-        )
-        chunks = format_digest(digest, collected.posts, header, failed_note)
+        seen = f"Просмотрено {len(selection.posts)} постов из {collected.channels_read} каналов"
+        if selection.skipped:
+            seen += f" (ещё {selection.skipped} менее популярных не влезли в лимит модели)"
+        header = f"🔥 <b>Интересное {period}</b>\n<i>{seen}</i>"
+        footer = "\n".join(filter(None, [failed_note, f"<i>Модель: {escape(analysis.model)}</i>"]))
+        chunks = format_digest(analysis.digest, selection.posts, header, footer)
         await status.delete()
         for chunk in chunks:
             await message.answer(chunk, reply_markup=self.keyboard())
@@ -330,7 +332,7 @@ async def run() -> None:
             BotCommand(command="help", description="Помощь"),
         ]
     )
-    log.info("Бот запущен. Модель: %s", cfg.model)
+    log.info("Бот запущен. Модель: %s (%s)", cfg.llm_model, cfg.llm_base_url)
     try:
         await dp.start_polling(bot)
     finally:

@@ -66,7 +66,7 @@ def post_url(entity: Channel, msg_id: int) -> str:
 
 @dataclass
 class Post:
-    id: int  # порядковый номер в выборке, по нему Claude ссылается на пост
+    id: int  # порядковый номер в выборке, по нему модель ссылается на пост
     channel_title: str
     url: str
     date: datetime

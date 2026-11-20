@@ -23,19 +23,27 @@ def _int(name: str, default: int) -> int:
     return int(value) if value else default
 
 
+def _str(name: str, default: str) -> str:
+    return os.getenv(name, "").strip() or default
+
+
 @dataclass(frozen=True)
 class Config:
     bot_token: str
     owner_id: int
     api_id: int
     api_hash: str
-    model: str
-    effort: str
+    llm_base_url: str
+    llm_api_key: str
+    llm_model: str
+    llm_max_tokens: int
     top_n: int
     default_hours: int
     max_lookback_hours: int
     max_posts_per_channel: int
     max_channels: int
+    max_input_chars: int
+    max_post_chars: int
     data_dir: Path
 
     @property
@@ -47,6 +55,10 @@ class Config:
     def state_path(self) -> Path:
         return self.data_dir / "state.json"
 
+    @property
+    def is_local_llm(self) -> bool:
+        return any(h in self.llm_base_url for h in ("localhost", "127.0.0.1", "0.0.0.0"))
+
 
 def load_telegram_user_config() -> tuple[int, str, Path]:
     """Только то, что нужно для входа в аккаунт (login.py)."""
@@ -57,21 +69,24 @@ def load_telegram_user_config() -> tuple[int, str, Path]:
 
 def load_config() -> Config:
     api_id, api_hash, data_dir = load_telegram_user_config()
-    _req("ANTHROPIC_API_KEY")  # SDK прочитает ключ сам, здесь только проверяем наличие
-    effort = os.getenv("DIGEST_EFFORT", "medium").strip() or "medium"
-    if effort not in {"low", "medium", "high", "xhigh", "max"}:
-        raise SystemExit("DIGEST_EFFORT должен быть одним из: low, medium, high, xhigh, max")
-    return Config(
+    cfg = Config(
         bot_token=_req("BOT_TOKEN"),
         owner_id=int(_req("OWNER_ID")),
         api_id=api_id,
         api_hash=api_hash,
-        model=os.getenv("DIGEST_MODEL", "claude-opus-5-5").strip() or "claude-opus-5-5",
-        effort=effort,
+        llm_base_url=_str("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
+        llm_api_key=os.getenv("LLM_API_KEY", "").strip(),
+        llm_model=_str("LLM_MODEL", "openrouter/free"),
+        llm_max_tokens=_int("LLM_MAX_TOKENS", 6000),
         top_n=_int("TOP_N", 7),
         default_hours=_int("DEFAULT_HOURS", 24),
         max_lookback_hours=_int("MAX_LOOKBACK_HOURS", 72),
         max_posts_per_channel=_int("MAX_POSTS_PER_CHANNEL", 40),
         max_channels=_int("MAX_CHANNELS", 60),
+        max_input_chars=_int("MAX_INPUT_CHARS", 60000),
+        max_post_chars=_int("MAX_POST_CHARS", 1000),
         data_dir=data_dir,
     )
+    if not cfg.llm_api_key and not cfg.is_local_llm:
+        raise SystemExit("Не задан LLM_API_KEY — получите бесплатный ключ (см. README) и впишите в .env")
+    return cfg

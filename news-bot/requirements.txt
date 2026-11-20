@@ -1,4 +1,4 @@
 aiogram>=3.33,<4
 telethon>=1.46,<2
-anthropic>=2.11,<3
+openai>=3.57,<4
 python-dotenv>=1.2
